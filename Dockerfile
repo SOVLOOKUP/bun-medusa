@@ -20,27 +20,26 @@ ARG MEDUSA_VERSION
 RUN apk add --no-cache nodejs npm git python3 build-base
 
 # ---------------------------------------------------------------------------
-# Two mitigations against npm registry 429 Too Many Requests on CI runners:
-#
-# 1) Install a `npm` PATH shim that makes `npm install` / `npm ci` a no-op.
-#    create-medusa-app performs a full monorepo `npm install --legacy-peer-deps`
-#    during scaffolding, but we delete every node_modules right after (we
-#    detach the backend and use Bun for everything). Running that install is
-#    pure waste and is the primary 429 trigger.
-#
-# 2) Set aggressive npm fetch retries as a safety net for anything that still
-#    calls npm (e.g. `npx` itself resolving the create-medusa-app tarball).
+# Route ALL package fetches through the npmmirror registry mirror.
+# GitHub Actions runners share egress IPs that npmjs.org aggressively rate
+# limits (HTTP 429), which killed every prior build. npmmirror is a public,
+# high-availability mirror that does not 429 CI traffic. Configured for both
+# npm/npx (env var) and Bun (bunfig.toml in HOME, picked up by every
+# `bun install` regardless of WORKDIR).
 # ---------------------------------------------------------------------------
-ENV NPM_CONFIG_FETCH_RETRIES=12 \
-    NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=15000 \
-    NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=180000 \
+ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com \
+    NPM_CONFIG_FETCH_RETRIES=8 \
+    NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=10000 \
+    NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000 \
     NPM_CONFIG_AUDIT=false \
-    NPM_CONFIG_FUND=false \
-    # Bun install retries against transient npm 429s on shared CI egress IPs.
-    # (Bun 1.2+ honours BUN_INSTALL_RETRY_*; defaults are 2/250ms, too small.)
-    BUN_INSTALL_RETRY_COUNT=20 \
-    BUN_INSTALL_RETRY_DELAY=5000
+    NPM_CONFIG_FUND=false
 
+RUN printf '[install]\nregistry = "https://registry.npmmirror.com"\n' > /root/.bunfig.toml
+
+# create-medusa-app performs a full monorepo `npm install --legacy-peer-deps`
+# during scaffolding that we delete immediately afterwards (we detach the
+# backend and use Bun for everything). Shim `npm install` to a no-op so
+# scaffolding is fast and never hits the network for the throwaway install.
 RUN printf '#!/bin/sh\ncase "$1" in install|ci|i) echo "[npm-shim] skipping %s (will use bun install later)"; exit 0 ;; esac; exec /usr/bin/npm "$@"\n' \
       > /usr/local/bin/npm \
  && chmod +x /usr/local/bin/npm
@@ -86,14 +85,12 @@ RUN rm -f package.json pnpm-workspace.yaml package-lock.json yarn.lock pnpm-lock
 
 WORKDIR /scaffold/server/apps/backend
 
-# Install all (dev + prod) dependencies with Bun. Outer retry loop for the
-# shared-CI-egress 429 scenario: even with BUN_INSTALL_RETRY_*, bun sometimes
-# exhausts its retries on one resolution; we back off and re-run `bun install`
-# (it is idempotent — everything already cached is skipped).
-RUN for i in 1 2 3 4 5; do \
+# Install all (dev + prod) dependencies with Bun (via npmmirror). Light retry
+# for transient network blips; bun install is idempotent.
+RUN for i in 1 2 3; do \
       if bun install; then break; fi; \
-      echo "bun install (backend) attempt $i failed, sleeping $((i*15))s ..."; \
-      sleep $((i * 15)); \
+      echo "bun install (backend) attempt $i failed, sleeping $((i*10))s ..."; \
+      sleep $((i * 10)); \
     done
 
 # Build backend + admin dashboard. `bun run build` invokes `medusa build`, which
@@ -106,10 +103,10 @@ RUN bun run build || (sleep 30 && bun run build)
 # then strip non-runtime files (type declarations, source maps, TypeScript
 # sources, tests, docs, changelogs) to shrink the final image.
 WORKDIR /scaffold/server/apps/backend/.medusa/server
-RUN for i in 1 2 3 4 5; do \
+RUN for i in 1 2 3; do \
       if bun install --production; then break; fi; \
-      echo "bun install (server production) attempt $i failed, sleeping $((i*15))s ..."; \
-      sleep $((i * 15)); \
+      echo "bun install (server production) attempt $i failed, sleeping $((i*10))s ..."; \
+      sleep $((i * 10)); \
     done \
  && find node_modules -type f \( \
       -name '*.md' -o -name '*.markdown' \
