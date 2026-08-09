@@ -42,7 +42,7 @@ const mods = {
   },
   workflows: {
     resolve: "@medusajs/workflow-engine-redis",
-    options: { redisUrl: ru }
+    options: { redis: { url: ru } }
   },
   locking: {
     resolve: "@medusajs/medusa/locking",
