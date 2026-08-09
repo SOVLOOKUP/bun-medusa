@@ -1,12 +1,22 @@
 # docker-compose for the Bun-built Medusa image published to GHCR.
+#
 # Usage:
-#   1. cp .env.example .env  &&  fill in real secrets
+#   1. cp .env.example .env  &&  fill in the required secrets
 #   2. docker compose up -d
 #   3. docker compose run --rm medusa bunx medusa db:migrate   # first-time only
 #   4. open http://localhost:9000/app
 #
-# The image is a self-contained production build (admin dashboard compiled in,
-# served on :9000/app). No source mount, no dev server, no 5173 port.
+# The image ships a self-contained production build: the admin dashboard is
+# compiled into the image and served from http://localhost:9000/app (no
+# separate 5173 dev server, no source mount).
+#
+# Notes:
+#   * The bundled entrypoint (docker-entrypoint-medusa.sh) automatically
+#     appends ?sslmode=disable&connect_timeout=30 to DATABASE_URL so the
+#     default self-hosted plain-TCP Postgres works without a 10 s SSL timeout.
+#   * When REDIS_URL is present the same entrypoint also overrides the four
+#     memory-backed default modules (cache / event_bus / workflows / locking)
+#     with their real Redis implementations.
 
 services:
   postgres:
@@ -50,9 +60,11 @@ services:
     ports:
       - "9000:9000"
     environment:
-      - NODE_ENV=production
-      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/medusa-store
-      - REDIS_URL=redis://redis:6379
+      NODE_ENV: production
+      # Query params sslmode=disable & connect_timeout=30 are appended
+      # automatically by the entrypoint; they do not need to be added here.
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/medusa-store
+      REDIS_URL: redis://redis:6379
     env_file:
       - .env
     # Persist user uploads / generated files across container restarts.

@@ -144,13 +144,29 @@ RUN addgroup -S medusa && adduser -S medusa -G medusa
 # the `medusa` CLI under Bun (no node required at runtime).
 COPY --from=builder --chown=medusa:medusa /scaffold/server/apps/backend/.medusa/server ./
 
+# Entry-point wrapper: if REDIS_URL is supplied at runtime it rewrites
+# /app/medusa-config.js so the four memory-backed modules (cache, event_bus,
+# workflows, locking) use real Redis-backed resolvers instead of the
+# in-memory defaults. /app/node_modules is used as the writable scratch dir
+# for the patch script (the user can't create files in /app root because
+# /app itself is owned by root, even though its contents were copied with
+# --chown=medusa:medusa).
+#
+# The wrapper also guarantees `sslmode=disable&connect_timeout=30` is present
+# on DATABASE_URL so mikro-orm does not attempt (and wait 10 s timing out on)
+# an SSL handshake against a plain TCP postgres.
+COPY docker-entrypoint-medusa.sh /usr/local/bin/docker-entrypoint-medusa.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint-medusa.sh
+
 USER medusa
 
 EXPOSE 9000
 
 # No secrets are baked into the image. Supply at runtime, e.g.:
 #   DATABASE_URL, JWT_SECRET, COOKIE_SECRET, REDIS_URL,
-#   STORE_CORS, ADMIN_CORS, AUTH_CORS
-# Run migrations once with:
-#   docker run --rm <image> bunx medusa db:migrate
+#   STORE_CORS, ADMIN_CORS, AUTH_CORS, AUTH_MFA_ENCRYPTION_KEY
+#
+# Run migrations once with (same image, same env vars):
+#   docker compose run --rm medusa bunx medusa db:migrate
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint-medusa.sh"]
 CMD ["bunx", "medusa", "start"]
