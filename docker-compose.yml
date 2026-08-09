@@ -1,0 +1,65 @@
+# docker-compose for the Bun-built Medusa image published to GHCR.
+# Usage:
+#   1. cp .env.example .env  &&  fill in real secrets
+#   2. docker compose up -d
+#   3. docker compose run --rm medusa bunx medusa db:migrate   # first-time only
+#   4. open http://localhost:9000/app
+#
+# The image is a self-contained production build (admin dashboard compiled in,
+# served on :9000/app). No source mount, no dev server, no 5173 port.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: medusa_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: medusa-store
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d medusa-store"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: medusa_redis
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  medusa:
+    image: ghcr.io/sovlookup/bun-medusa:2.18.0
+    container_name: medusa_backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "9000:9000"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/medusa-store
+      - REDIS_URL=redis://redis:6379
+    env_file:
+      - .env
+    # Persist user uploads / generated files across container restarts.
+    volumes:
+      - medusa_uploads:/app/uploads
+
+volumes:
+  pgdata:
+  redisdata:
+  medusa_uploads:
