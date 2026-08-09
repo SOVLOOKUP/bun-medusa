@@ -19,6 +19,28 @@ ARG MEDUSA_VERSION
 # the build.
 RUN apk add --no-cache nodejs npm git python3 build-base
 
+# ---------------------------------------------------------------------------
+# Two mitigations against npm registry 429 Too Many Requests on CI runners:
+#
+# 1) Install a `npm` PATH shim that makes `npm install` / `npm ci` a no-op.
+#    create-medusa-app performs a full monorepo `npm install --legacy-peer-deps`
+#    during scaffolding, but we delete every node_modules right after (we
+#    detach the backend and use Bun for everything). Running that install is
+#    pure waste and is the primary 429 trigger.
+#
+# 2) Set aggressive npm fetch retries as a safety net for anything that still
+#    calls npm (e.g. `npx` itself resolving the create-medusa-app tarball).
+# ---------------------------------------------------------------------------
+ENV NPM_CONFIG_FETCH_RETRIES=12 \
+    NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=15000 \
+    NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=180000 \
+    NPM_CONFIG_AUDIT=false \
+    NPM_CONFIG_FUND=false
+
+RUN printf '#!/bin/sh\ncase "$1" in install|ci|i) echo "[npm-shim] skipping %s (will use bun install later)"; exit 0 ;; esac; exec /usr/bin/npm "$@"\n' \
+      > /usr/local/bin/npm \
+ && chmod +x /usr/local/bin/npm
+
 # CI=1 keeps create-medusa-app non-interactive (skips the Claude Code prompt).
 # A placeholder DATABASE_URL keeps medusa-config happy during the build; no
 # database is contacted at build time (--skip-db is passed below).
@@ -30,13 +52,26 @@ WORKDIR /scaffold
 # Scaffold a fresh Medusa project at the pinned version. `npx` runs
 # create-medusa-app under node; `yes ""` answers the optional Next.js starter
 # prompt with the default (no). --skip-db avoids any database interaction,
-# --no-browser skips opening a browser.
-RUN yes "" | npx --yes create-medusa-app@${MEDUSA_VERSION} server \
-      --directory-path /scaffold \
-      --skip-db \
-      --no-browser \
-      --use-npm \
-      --version ${MEDUSA_VERSION}
+# --no-browser skips opening a browser. Retry loop catches transient registry
+# / network failures (429, 5xx, socket resets, flaky git clone).
+RUN set -eu; \
+    for i in 1 2 3; do \
+      if yes "" | npx --yes create-medusa-app@${MEDUSA_VERSION} server \
+          --directory-path /scaffold \
+          --skip-db \
+          --no-browser \
+          --use-npm \
+          --version ${MEDUSA_VERSION}; then \
+        break; \
+      fi; \
+      echo "create-medusa-app attempt $i failed, retrying..."; \
+      rm -rf /scaffold/* /scaffold/.[!.]* 2>/dev/null || true; \
+      sleep $((i * 20)); \
+    done
+
+# After scaffolding we no longer need the install shim. Restore real npm so
+# downstream tools that happen to shell out to npm still work.
+RUN rm -f /usr/local/bin/npm
 
 # The template is a pnpm/turbo monorepo. Detach the backend from it so Bun can
 # manage the backend as a standalone project (no workspace hoisting, no
@@ -51,8 +86,9 @@ WORKDIR /scaffold/server/apps/backend
 RUN bun install
 
 # Build backend + admin dashboard. `bun run build` invokes `medusa build`, which
-# runs under node through the CLI's shebang.
-RUN bun run build
+# runs under node through the CLI's shebang. Retry once: the admin dashboard
+# build downloads packages from npm on first build and can transiently 429.
+RUN bun run build || (sleep 30 && bun run build)
 
 # `.medusa/server` is a self-contained production app: the build copies the
 # backend's package.json into it. Install only production deps there with Bun,
