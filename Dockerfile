@@ -35,7 +35,11 @@ ENV NPM_CONFIG_FETCH_RETRIES=12 \
     NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=15000 \
     NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=180000 \
     NPM_CONFIG_AUDIT=false \
-    NPM_CONFIG_FUND=false
+    NPM_CONFIG_FUND=false \
+    # Bun install retries against transient npm 429s on shared CI egress IPs.
+    # (Bun 1.2+ honours BUN_INSTALL_RETRY_*; defaults are 2/250ms, too small.)
+    BUN_INSTALL_RETRY_COUNT=20 \
+    BUN_INSTALL_RETRY_DELAY=5000
 
 RUN printf '#!/bin/sh\ncase "$1" in install|ci|i) echo "[npm-shim] skipping %s (will use bun install later)"; exit 0 ;; esac; exec /usr/bin/npm "$@"\n' \
       > /usr/local/bin/npm \
@@ -82,8 +86,15 @@ RUN rm -f package.json pnpm-workspace.yaml package-lock.json yarn.lock pnpm-lock
 
 WORKDIR /scaffold/server/apps/backend
 
-# Install all (dev + prod) dependencies with Bun.
-RUN bun install
+# Install all (dev + prod) dependencies with Bun. Outer retry loop for the
+# shared-CI-egress 429 scenario: even with BUN_INSTALL_RETRY_*, bun sometimes
+# exhausts its retries on one resolution; we back off and re-run `bun install`
+# (it is idempotent — everything already cached is skipped).
+RUN for i in 1 2 3 4 5; do \
+      if bun install; then break; fi; \
+      echo "bun install (backend) attempt $i failed, sleeping $((i*15))s ..."; \
+      sleep $((i * 15)); \
+    done
 
 # Build backend + admin dashboard. `bun run build` invokes `medusa build`, which
 # runs under node through the CLI's shebang. Retry once: the admin dashboard
@@ -95,7 +106,11 @@ RUN bun run build || (sleep 30 && bun run build)
 # then strip non-runtime files (type declarations, source maps, TypeScript
 # sources, tests, docs, changelogs) to shrink the final image.
 WORKDIR /scaffold/server/apps/backend/.medusa/server
-RUN bun install --production \
+RUN for i in 1 2 3 4 5; do \
+      if bun install --production; then break; fi; \
+      echo "bun install (server production) attempt $i failed, sleeping $((i*15))s ..."; \
+      sleep $((i * 15)); \
+    done \
  && find node_modules -type f \( \
       -name '*.md' -o -name '*.markdown' \
       -o -name '*.d.ts' -o -name '*.d.cts' -o -name '*.d.mts' \
