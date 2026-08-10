@@ -4,7 +4,7 @@
 # Run:    docker run -p 9000:9000 -e DATABASE_URL=... -e REDIS_URL=... ghcr.io/<owner>/bun-medusa:latest
 
 # ── Stage 1: Build ──────────────────────────────────────────────────
-FROM oven/bun:1.4-debian AS builder
+FROM oven/bun:debian AS builder
 
 # Replace Debian mirrors for faster builds in China
 RUN sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' \
@@ -33,7 +33,7 @@ WORKDIR /app/medusa
 RUN bun install
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────
-FROM oven/bun:1.4-debian AS runner
+FROM oven/bun:debian AS runner
 
 # Replace Debian mirrors for faster builds in China
 RUN sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' \

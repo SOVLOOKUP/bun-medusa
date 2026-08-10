@@ -5,7 +5,7 @@
 #
 # Build:  docker build -f Dockerfile.dev -t bun-medusa:dev .
 #
-FROM oven/bun:1.4-debian
+FROM oven/bun:debian
 
 # 替换为国内 Debian 源（清华 TUNA）
 RUN sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' \
