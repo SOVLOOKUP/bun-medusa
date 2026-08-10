@@ -341,42 +341,6 @@ if [ -n "$ADMIN_EMAIL" ] && [ -n "$ADMIN_PASSWORD" ]; then
   fi
 fi
 
-# --- (7b) Clear stale Vite optimizeDeps cache ------------------------------
-#
-# Vite's on-demand deps optimizer stores pre-bundled chunks under
-# node_modules/.vite/deps/<name>-<ENTRYHASH>-<CONTENTHASH>.js and writes
-# the computed hashes to _metadata.json.  PROBLEM: whenever any boot-time
-# file written by this entrypoint changes (medusa-config.ts patches,
-# admin-vite-overrides.ts sync, bun install add/remove modules after
-# first boot, etc.), Vite's dependency scanner computes a NEW content
-# hash but Bun/esbuild sometimes FAILS to re-run the actual pre-bundling
-# step — leaving the metadata pointing at hash "A" but disk still has
-# hash "B".  The browser then imports the new hash from metadata, hits
-# HTTP 404, and every route that would dynamically import that chunk
-# shows "Failed to fetch dynamically imported module".
-#
-# Evidence from the user's container: metadata expected
-#   refund-reason-list-<prefix>-4R77636U.js
-# but disk had
-#   refund-reason-list-<prefix>-PQN5RL7O.js
-# — same entry hash, different content hash → stale cache.
-#
-# Safest and simplest fix: NUKE the entire node_modules/.vite directory
-# before every `bun run dev` boot.  Vite will re-run optimizeDeps on
-# startup (adds ~5–20 s on a cold bun process depending on CPU, which is
-# acceptable for a dev container) and guarantee metadata + deps chunks
-# always agree on the hashes.
-_VITE_CACHE="$APP_DIR/node_modules/.vite"
-if [ -d "$_VITE_CACHE" ]; then
-  _N_FILES=$(find "$_VITE_CACHE" -type f | wc -l | tr -d ' ')
-  echo "[dev-entrypoint] Clearing stale Vite optimizeDeps cache ($_N_FILES files in $_VITE_CACHE) ..."
-  rm -rf "$_VITE_CACHE"
-  echo "[dev-entrypoint] Cache cleared — first load after boot will rebuild optimized deps (expect ~10–30 s)."
-else
-  echo "[dev-entrypoint] No prior Vite optimizeDeps cache; Vite will build it on first request."
-fi
-unset _VITE_CACHE _N_FILES
-
 # --- (8) Shared-port proxy + dev server -----------------------------------
 # shared-port-proxy.ts (Bun) binds to container port 9000 and dispatches:
 #   • HTTP + non-HMR WebSocket traffic   → 127.0.0.1:9002 (Medusa)

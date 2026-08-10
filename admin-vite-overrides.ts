@@ -91,6 +91,32 @@ const adminVite = (config: any): any => {
     "(location.protocol === 'https:' ? 'wss' : 'ws')";
   config.define.__HMR_CLIENT_PORT__ = explicitClientPort;
 
+  // (C2) Disable Vite optimizeDeps entirely in dev mode.
+  //      Root cause of repeatedly-reported "Failed to fetch dynamically
+  //      imported module" with HTTP 404: Medusa's admin-bundler lazily
+  //      triggers optimizeDeps discovery whenever the user navigates an
+  //      admin route that imports a new page-level chunk.  Under Bun,
+  //      the esbuild prebundling step occasionally produces chunk files
+  //      whose <contentHash> suffix disagrees with the _metadata.json
+  //      hash the transform pipeline injects into parent chunks that
+  //      dynamic-import them — the browser loads
+  //        chunk-A (stale, baked with hash "X" of chunk-B)
+  //        → fetches chunk-B at hash X
+  //        → disk has chunk-B at hash Y (≠X)
+  //        → HTTP 404
+  //      Even deleting node_modules/.vite before every boot only fixes
+  //      the initial boot; navigating between admin routes re-triggers
+  //      lazy discovery and the hash mismatch can repeat.
+  //
+  //      `optimizeDeps.disabled = "dev"` tells Vite to NEVER prebundle.
+  //      The browser simply loads EVERY admin route-module as a plain
+  //      native ESM fetch directly from node_modules via @fs/ paths.
+  //      Modern browsers handle hundreds of parallel ESM requests fine;
+  //      trade a bit more first-visit request count for ZERO 404s and
+  //      zero Bun/esbuild compatibility surprises.
+  config.optimizeDeps = config.optimizeDeps || {};
+  config.optimizeDeps.disabled = "dev";
+
   // (D) resolve.alias — belt-and-suspenders fallback.
   //     Works EVEN IF admin-bundler overwrites config.plugins after our
   //     function returns (the alias is in config.resolve, not config.plugins).
