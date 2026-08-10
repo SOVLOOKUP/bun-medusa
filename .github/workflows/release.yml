@@ -131,7 +131,7 @@ jobs:
           IMAGE="ghcr.io/${REPO_LC}:${{ steps.version.outputs.version }}"
           echo "Pulling and running $IMAGE ..."
           docker run -d --name medusa-test \
-            -p 9000:9000 \
+            --network host \
             -e DATABASE_URL="postgres://medusa:medusa_password@localhost:5432/medusa?sslmode=disable" \
             -e REDIS_URL="redis://localhost:6379" \
             -e JWT_SECRET="supersecret" \
