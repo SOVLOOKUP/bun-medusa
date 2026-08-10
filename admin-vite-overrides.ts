@@ -38,7 +38,22 @@ const adminVite = (config: any): any => {
   // (C)
   config.server.hmr = { port: 9001, clientPort: "", path: "/vite-hmr" };
 
-  // (D)
+  // (D) resolve.alias — belt-and-suspenders fallback.
+  //     Works EVEN IF admin-bundler overwrites config.plugins after our
+  //     function returns (the alias is in config.resolve, not config.plugins).
+  //     Maps base-stripped "/medusa/..." back to "/app/medusa/..." on disk.
+  config.resolve = config.resolve || {};
+  const existingAliases = Array.isArray(config.resolve.alias)
+    ? config.resolve.alias
+    : config.resolve.alias
+      ? [config.resolve.alias]
+      : [];
+  config.resolve.alias = [
+    ...existingAliases,
+    { find: /^\/medusa\//, replacement: "/app/medusa/" },
+  ];
+
+  // (D2) resolve-abs-fs-paths plugin — primary fix.
   config.plugins = [
     ...(config.plugins || []),
     {
