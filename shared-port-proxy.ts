@@ -174,5 +174,5 @@ console.log(
   `[proxy]   HTTP + non-HMR WS   → 127.0.0.1:${MAIN_PORT}  (Medusa + Vite middleware)`,
 );
 console.log(
-  `[proxy]   WS  ${HMR_PATH_PREFIX}(*)        → 127.0.0.1:${HMR_PORT}  (Vite HMR fixed port)`,
+  `[proxy]   WS  *${HMR_PATH_SEGMENT}*           → 127.0.0.1:${HMR_PORT}  (Vite HMR fixed port)`,
 );
