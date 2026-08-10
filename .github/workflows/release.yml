@@ -147,6 +147,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Extract metadata (Docker tags/labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=dev
+            type=raw,value=dev-${{ needs.get-versions.outputs.short_sha }}
+
       - name: Build and push dev image
         uses: docker/build-push-action@v6
         with:
@@ -154,9 +163,8 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64
           push: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:dev
-            ${{ env.IMAGE_NAME }}:dev-${{ needs.get-versions.outputs.short_sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
