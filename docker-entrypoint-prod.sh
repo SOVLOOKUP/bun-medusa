@@ -7,7 +7,7 @@ cd "$APP_DIR"
 
 # --- (1) Run database migrations -----------------------------------------
 echo "[medusa] Running database migrations ..."
-bunx medusa db:migrate 2>&1 || {
+npx medusa db:migrate 2>&1 || {
   echo "[medusa] Migration failed, will retry on next start or during first run."
 }
 echo "[medusa] Database migrations complete."
@@ -17,7 +17,7 @@ ADMIN_EMAIL="${MEDUSA_ADMIN_EMAIL:-}"
 ADMIN_PASSWORD="${MEDUSA_ADMIN_PASSWORD:-}"
 if [ -n "$ADMIN_EMAIL" ] && [ -n "$ADMIN_PASSWORD" ]; then
   echo "[medusa] Ensuring admin user '$ADMIN_EMAIL' exists ..."
-  if bunx medusa user -e "$ADMIN_EMAIL" -p "$ADMIN_PASSWORD" 2>&1; then
+  if npx medusa user -e "$ADMIN_EMAIL" -p "$ADMIN_PASSWORD" 2>&1; then
     echo "[medusa] Admin user created."
   else
     echo "[medusa] Admin user already exists — skipping."

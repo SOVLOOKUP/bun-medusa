@@ -27,8 +27,13 @@ ENV BUN_CONFIG_REGISTRY=https://registry.npmmirror.com
 # Install ALL dependencies (Medusa v2 runs directly without a build step)
 RUN bun install
 
-# ── Stage 2: Runtime ─────────────────────────────────────────────────
-FROM oven/bun:debian AS runner
+# ── Stage 2: Runtime (Node.js — Medusa v2 officially supports Node) ──
+FROM node:22-slim AS runner
+
+# Install curl for healthchecks
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/medusa
 
@@ -43,4 +48,4 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 EXPOSE 9000
 
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["bunx", "medusa", "start"]
+CMD ["npx", "medusa", "start"]
