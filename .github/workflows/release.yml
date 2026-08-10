@@ -1,6 +1,8 @@
 name: Release
 
 on:
+  push:
+    branches: [main]
   release:
     types: [created]
   workflow_dispatch:
@@ -26,11 +28,12 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "release" ]; then
             echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo "version=v0.0.1-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
           else
             echo "version=v$(date +%Y%m%d)" >> $GITHUB_OUTPUT
           fi
-          # Strip 'v' prefix for MEDUSA_VERSION build arg
-          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${{ steps.version.outputs.version }}"
           VERSION_NO_V="${VERSION#v}"
           echo "version_no_v=${VERSION_NO_V}" >> $GITHUB_OUTPUT
 
@@ -86,6 +89,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "release" ]; then
             echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo "version=v0.0.1-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
           else
             echo "version=v$(date +%Y%m%d)" >> $GITHUB_OUTPUT
           fi
@@ -97,14 +102,11 @@ jobs:
           IMAGE_REF="ghcr.io/${{ github.repository }}:${VERSION}"
 
           echo "Updating image reference to: ${IMAGE_REF}"
-          sed -i "s|ghcr.io/REPLACE_ME/bun-medusa:2.18.0|${IMAGE_REF}|g" apps/${APP_NAME}/${VERSION_NO_V}/docker-compose.yml
-          cat apps/${APP_NAME}/${VERSION_NO_V}/docker-compose.yml
+          sed -i "s|ghcr.io/REPLACE_ME/bun-medusa:2.18.0|${IMAGE_REF}|g" apps/${APP_NAME}/2.18.0/docker-compose.yml
+          cat apps/${APP_NAME}/2.18.0/docker-compose.yml
 
       - name: Validate app structure
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          VERSION_DIR="${VERSION#v}"
-
           if [ ! -d "apps/${APP_NAME}" ]; then
             echo "::error::App directory apps/${APP_NAME} not found"
             exit 1
@@ -115,23 +117,23 @@ jobs:
             exit 1
           fi
 
-          if [ ! -f "apps/${APP_NAME}/${VERSION_DIR}/data.yml" ]; then
-            echo "::error::Version data.yml not found for ${VERSION_DIR}"
+          if [ ! -f "apps/${APP_NAME}/2.18.0/data.yml" ]; then
+            echo "::error::Version data.yml not found for 2.18.0"
             exit 1
           fi
 
-          if [ ! -f "apps/${APP_NAME}/${VERSION_DIR}/docker-compose.yml" ]; then
-            echo "::error::docker-compose.yml not found for ${VERSION_DIR}"
+          if [ ! -f "apps/${APP_NAME}/2.18.0/docker-compose.yml" ]; then
+            echo "::error::docker-compose.yml not found for 2.18.0"
             exit 1
           fi
 
-          echo "App structure validated successfully for version ${VERSION_DIR}"
+          echo "App structure validated successfully for version 2.18.0"
 
       - name: Package as tar.gz
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          VERSION_DIR="${VERSION#v}"
-          PACKAGE_NAME="${APP_NAME}-${VERSION_DIR}-1panel.tar.gz"
+          VERSION_NO_V="${VERSION#v}"
+          PACKAGE_NAME="${APP_NAME}-${VERSION_NO_V}-1panel.tar.gz"
 
           cd apps
           tar czf ../${PACKAGE_NAME} ${APP_NAME}/
@@ -143,8 +145,8 @@ jobs:
       - name: Package as zip
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          VERSION_DIR="${VERSION#v}"
-          PACKAGE_NAME="${APP_NAME}-${VERSION_DIR}-1panel.zip"
+          VERSION_NO_V="${VERSION#v}"
+          PACKAGE_NAME="${APP_NAME}-${VERSION_NO_V}-1panel.zip"
 
           cd apps
           zip -r ../${PACKAGE_NAME} ${APP_NAME}/
