@@ -27,13 +27,15 @@ ENV BUN_CONFIG_REGISTRY=https://registry.npmmirror.com
 # Install ALL dependencies (Medusa v2 runs directly without a build step)
 RUN bun install
 
-# ── Stage 2: Runtime (Node.js — Medusa v2 officially supports Node) ──
-FROM node:22-slim AS runner
+# Stub out @cspotcode/source-map-support — it conflicts with Bun's native
+# stack trace handling (causes "column must be >= 0" errors)
+RUN echo 'exports.install = () => {}; exports.uninstall = () => {};' > \
+    node_modules/@cspotcode/source-map-support/source-map-support.js && \
+    echo 'module.exports = require("./source-map-support");' > \
+    node_modules/@cspotcode/source-map-support/index.js
 
-# Install curl for healthchecks
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl && \
-    rm -rf /var/lib/apt/lists/*
+# ── Stage 2: Runtime ─────────────────────────────────────────────────
+FROM oven/bun:debian AS runner
 
 WORKDIR /app/medusa
 
@@ -48,4 +50,4 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 EXPOSE 9000
 
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["npx", "medusa", "start"]
+CMD ["bunx", "medusa", "start"]
