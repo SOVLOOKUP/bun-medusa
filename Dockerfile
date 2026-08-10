@@ -26,10 +26,12 @@ WORKDIR /app/medusa
 RUN sed -i 's/module\.exports = defineConfig/export default defineConfig/' medusa-config.ts
 
 # Permit any Host header in the embedded Admin Vite dev server.
-# medusa-config.ts has no `admin:` field by default; inject one with
-# vite.server.allowedHosts=true (allow any Host) + host=true (listen 0.0.0.0).
+# medusa-config.ts has no `admin:` field by default; inject one as a
+# TOP-LEVEL sibling of `projectConfig` (NOT inside it — `admin` is not a
+# valid property of ProjectConfigOptions and will fail `medusa build`).
+# vite.server.allowedHosts=true allows any Host; host=true listens on 0.0.0.0.
 RUN if ! grep -q 'allowedHosts' medusa-config.ts; then \
-    sed -i 's/projectConfig: {/projectConfig: { admin: { vite: { server: { allowedHosts: true, host: true } } },/' medusa-config.ts; \
+    sed -i 's/projectConfig: {/admin: { vite: { server: { allowedHosts: true, host: true } } },\n  projectConfig: {/' medusa-config.ts; \
     fi && \
     grep -q 'allowedHosts' medusa-config.ts && \
     echo "medusa-config.ts patched for allowedHosts"
