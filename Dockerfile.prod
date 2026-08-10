@@ -46,9 +46,14 @@ RUN sed -i 's/module\.exports = defineConfig/export default defineConfig/' medus
 # medusa-config.ts has no `admin:` field by default; inject one as a
 # TOP-LEVEL sibling of `projectConfig` (NOT inside it — `admin` is not a
 # valid property of ProjectConfigOptions and will fail `medusa build`).
-# vite.server.allowedHosts=true allows any Host; host=true listens on 0.0.0.0.
+# `admin.vite` MUST be a FUNCTION (config) => config — passing an object
+# crashes `medusa build` ("options.vite is not a function") and is silently
+# ignored in dev mode (so allowedHosts never takes effect → 403).
+# The function sets server.allowedHosts=true (allow any Host) and
+# server.host=true (listen on 0.0.0.0). Harmless during `medusa build`
+# (allowedHosts only affects the dev server, not the build output).
 RUN if ! grep -q 'allowedHosts' medusa-config.ts; then \
-    sed -i 's/projectConfig: {/admin: { vite: { server: { allowedHosts: true, host: true } } },\n  projectConfig: {/' medusa-config.ts; \
+    sed -i 's/projectConfig: {/admin: { vite: (config) => { config.server = config.server || {}; config.server.allowedHosts = true; config.server.host = true; return config; } },\n  projectConfig: {/' medusa-config.ts; \
     fi && \
     grep -q 'allowedHosts' medusa-config.ts && \
     echo "medusa-config.ts patched for allowedHosts"
