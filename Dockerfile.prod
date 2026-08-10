@@ -27,24 +27,9 @@ ENV BUN_CONFIG_REGISTRY=https://registry.npmmirror.com
 # Install ALL dependencies (Medusa v2 runs directly without a build step)
 RUN bun install
 
-# Neutralize @cspotcode/source-map-support — it overrides Error.prepareStackTrace
-# and crashes Bun with "column must be >= 0" when mapping decorator stack frames.
-# Overwrite ALL entry points with a no-op stub.
-RUN cd node_modules/@cspotcode/source-map-support && \
-    echo 'exports.install = function(){}; exports.uninstall = function(){};' > source-map-support.js && \
-    echo 'module.exports = require("./source-map-support");' > index.js && \
-    rm -f source-map-support.mjs source-map-support.cjs 2>/dev/null; \
-    echo '{"name":"@cspotcode/source-map-support","version":"0.0.0","main":"./source-map-support.js"}' > package.json
-
-# Add migrate/user scripts to package.json so we can use 'bun run' for them
-# (bun run handles CJS/ESM resolution correctly, unlike bunx)
-RUN bun -e " \
-    const p = require('./package.json'); \
-    p.scripts = p.scripts || {}; \
-    p.scripts.migrate = 'medusa db:migrate'; \
-    p.scripts['create-admin'] = 'medusa user -e \$MEDUSA_ADMIN_EMAIL -p \$MEDUSA_ADMIN_PASSWORD'; \
-    require('fs').writeFileSync('./package.json', JSON.stringify(p, null, 2)); \
-    "
+# Add migrate + create-admin scripts to package.json via sed (not bun -e,
+# which could interfere with CJS/ESM module resolution)
+RUN sed -i 's/"start": "medusa start"/"start": "medusa start",\n    "migrate": "medusa db:migrate",\n    "create-admin": "medusa user"/' package.json
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────
 FROM oven/bun:debian AS runner
