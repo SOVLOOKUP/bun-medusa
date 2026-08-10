@@ -27,12 +27,14 @@ ENV BUN_CONFIG_REGISTRY=https://registry.npmmirror.com
 # Install ALL dependencies (Medusa v2 runs directly without a build step)
 RUN bun install
 
-# Patch @cspotcode/source-map-support: disable its Error.prepareStackTrace
-# override that crashes Bun with "column must be >= 0" when MikroORM
-# decorators are processed. Only remove the assignment — keep the rest
-# of the module intact to avoid CJS/ESM cascade issues.
-RUN sed -i 's/Error\.prepareStackTrace = prepareStackTrace/Error.prepareStackTrace = void 0/g' \
-    node_modules/@cspotcode/source-map-support/source-map-support.js
+# Patch @jridgewell/trace-mapping: return null result instead of throwing
+# "column must be >= 0" when Bun passes negative column values during
+# decorator stack trace resolution. This prevents the fatal crash in
+# @cspotcode/source-map-support's prepareStackTrace hook.
+RUN sed -i 's/throw new Error(COL_GTR_EQ_ZERO)/return {source:null,line:null,column:null,name:null}/g' \
+    node_modules/@jridgewell/trace-mapping/dist/trace-mapping.umd.js && \
+    sed -i 's/throw new Error(LINE_GTR_ZERO)/return {source:null,line:null,column:null,name:null}/g' \
+    node_modules/@jridgewell/trace-mapping/dist/trace-mapping.umd.js
 
 # Add migrate + create-admin scripts to package.json
 RUN sed -i 's/"start": "medusa start"/"start": "medusa start",\n    "migrate": "medusa db:migrate",\n    "create-admin": "medusa user"/' package.json
