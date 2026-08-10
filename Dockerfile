@@ -7,9 +7,9 @@
 #
 FROM oven/bun:debian
 
-# Install git (needed to clone Medusa starter repo)
+# Install git + CA certificates (needed for HTTPS git clone)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends git && \
+    apt-get install -y --no-install-recommends git ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
