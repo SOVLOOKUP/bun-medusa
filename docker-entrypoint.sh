@@ -15,6 +15,24 @@
 # ---------------------------------------------------------------------------
 set -eu
 
+# --- (0) Disable core dumps ------------------------------------------------
+# Bun / Node native-module segfaults occasionally (CJS/ESM bridge, native
+# bindings, trace-mapping null-return patch edge cases, etc.) and each
+# crash writes a 1 GB core.* file to the process cwd (/app/medusa), which
+# is the user's bind-mounted data volume.  Those files serve NO purpose
+# inside a throwaway dev container, silently eat disk space, and force
+# the user to manually clean them up.  Disable core dumping before any
+# child process starts.  (The equivalent `--ulimit core=0` at docker-run
+# time also works but this way we don't rely on the user remembering.)
+if command -v ulimit >/dev/null 2>&1; then
+  ulimit -c 0 2>/dev/null || true
+fi
+# If we have CAP_SYS_RESOURCE (rare) and the kernel core_pattern points
+# somewhere writable, also hint the kernel to discard dumps via pipe.
+# (Gracefully ignore — most container runtimes drop this capability.)
+[ -w /proc/sys/kernel/core_pattern ] 2>/dev/null \
+  && echo "|/bin/false" > /proc/sys/kernel/core_pattern 2>/dev/null || true
+
 APP_DIR="/app/medusa"
 SEED_DIR="/app/medusa-seed"
 
