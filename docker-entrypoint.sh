@@ -9,8 +9,9 @@
 #      around Bun bug #17303 (source-map-support crash in containers).
 #   4. Generate a .env file from environment variables (if absent).
 #   5. Append sslmode=disable&connect_timeout=30 to DATABASE_URL.
-#   6. Optionally create the admin user.
-#   7. Hand off to `bun run dev` (i.e. `medusa develop`).
+#   6. Run database migrations (creates tables required by medusa develop).
+#   7. Optionally create the admin user.
+#   8. Hand off to `bun run dev` (i.e. `medusa develop`).
 # ---------------------------------------------------------------------------
 set -eu
 
@@ -85,18 +86,34 @@ if [ -n "${DATABASE_URL:-}" ]; then
   fi
 fi
 
-# --- (6) Auto-create admin user (optional) --------------------------------
+# --- (6) Run database migrations ------------------------------------------
+# `medusa develop` loads module loaders (Tax, Currency, Region...) that
+# query the DB at boot; if tables don't exist the boot fails fatally with
+# "relation ... does not exist".  Run migrations first, mirroring the
+# production entrypoint.  Use `bun run migrate` (not bunx) to avoid CJS/ESM
+# parsing issues in Medusa's config loader.
+echo "[dev-entrypoint] Running database migrations ..."
+bun run migrate 2>&1 || {
+  echo "[dev-entrypoint] Migration failed — dev server may crash if tables are missing."
+}
+echo "[dev-entrypoint] Database migrations complete."
+
+# --- (7) Auto-create admin user (optional) --------------------------------
 ADMIN_EMAIL="${MEDUSA_ADMIN_EMAIL:-}"
 ADMIN_PASSWORD="${MEDUSA_ADMIN_PASSWORD:-}"
 if [ -n "$ADMIN_EMAIL" ] && [ -n "$ADMIN_PASSWORD" ]; then
   echo "[dev-entrypoint] Ensuring admin user '$ADMIN_EMAIL' exists ..."
-  if bunx medusa user -e "$ADMIN_EMAIL" -p "$ADMIN_PASSWORD" 2>&1; then
+  # `bun run create-admin` resolves modules via bun run (avoids bunx CJS/ESM
+  # conflict).  $MEDUSA_ADMIN_EMAIL / $MEDUSA_ADMIN_PASSWORD are expanded at
+  # runtime by the shell from the script string baked into package.json.
+  if MEDUSA_ADMIN_EMAIL="$ADMIN_EMAIL" MEDUSA_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+       bun run create-admin 2>&1; then
     echo "[dev-entrypoint] Admin user created."
   else
     echo "[dev-entrypoint] Admin user already exists — skipping."
   fi
 fi
 
-# --- (7) Hand off to dev server -------------------------------------------
+# --- (8) Hand off to dev server -------------------------------------------
 echo "[dev-entrypoint] Starting dev server: $*"
 exec "$@"
