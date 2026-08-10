@@ -47,8 +47,6 @@ RUN sed -i 's/"start": "medusa start"/"start": "medusa start",\n    "migrate": "
 
 # Build the admin dashboard (required for production server)
 RUN bun run build
-# Debug: verify admin build output exists
-RUN find . -name "index.html" -not -path "./node_modules/*" 2>/dev/null || echo "WARN: No index.html found"
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────
 FROM oven/bun:debian AS runner
@@ -58,8 +56,11 @@ WORKDIR /app/medusa
 # Copy built artifacts and source from builder
 COPY --from=builder /app/medusa .
 
-# Debug: verify admin build output was copied
-RUN find . -name "index.html" -not -path "./node_modules/*" 2>/dev/null || echo "WARN: No index.html in runner"
+# Medusa v2 builds the admin to .medusa/server/public/admin/, but the
+# production server (adminLoader) looks for it at <rootDir>/public/admin/.
+# Create a symlink so the server can find index.html at the expected path.
+RUN mkdir -p public && \
+    ln -sfn ../.medusa/server/public/admin public/admin
 
 # Copy production entrypoint
 COPY docker-entrypoint-prod.sh /usr/local/bin/docker-entrypoint.sh
