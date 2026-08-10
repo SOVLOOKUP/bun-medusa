@@ -43,11 +43,10 @@ RUN sed -i 's/throw new Error(COL_GTR_EQ_ZERO)/return {source:null,line:null,col
 RUN sed -i 's/module\.exports = defineConfig/export default defineConfig/' medusa-config.ts
 
 # Permit any Host header in the embedded Admin Vite dev server.
-# Vite enables host-checking by default, blocking non-localhost Host names
-# (e.g. custom reverse proxy domains).  Inject allowedHosts=true after
-# `admin: {` in medusa-config.ts via simple sed (idempotent).
+# medusa-config.ts has no `admin:` field by default; inject one with
+# vite.server.allowedHosts=true (allow any Host) + host=true (listen 0.0.0.0).
 RUN if ! grep -q 'allowedHosts' medusa-config.ts; then \
-      sed -i 's/admin: {/admin: { vite: { server: { allowedHosts: true, host: true } },/' medusa-config.ts; \
+    sed -i 's/projectConfig: {/projectConfig: { admin: { vite: { server: { allowedHosts: true, host: true } } },/' medusa-config.ts; \
     fi && \
     grep -q 'allowedHosts' medusa-config.ts && \
     echo "medusa-config.ts patched for allowedHosts"

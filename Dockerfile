@@ -26,14 +26,10 @@ WORKDIR /app/medusa
 RUN sed -i 's/module\.exports = defineConfig/export default defineConfig/' medusa-config.ts
 
 # Permit any Host header in the embedded Admin Vite dev server.
-# Medusa v2 runs the Admin UI on a Vite dev server during `medusa develop`,
-# and Vite enables host-checking by default, blocking requests whose Host
-# header is not localhost (e.g. medusa.metapoint.tech or any reverse proxy
-# hostname).  Inject `vite: { server: { allowedHosts: true, host: true } }`
-# right after `admin: {` in medusa-config.ts.  Simple sed on the opening
-# brace avoids fragile multi-line block matching.
+# medusa-config.ts has no `admin:` field by default; inject one with
+# vite.server.allowedHosts=true (allow any Host) + host=true (listen 0.0.0.0).
 RUN if ! grep -q 'allowedHosts' medusa-config.ts; then \
-    sed -i 's/admin: {/admin: { vite: { server: { allowedHosts: true, host: true } },/' medusa-config.ts; \
+    sed -i 's/projectConfig: {/projectConfig: { admin: { vite: { server: { allowedHosts: true, host: true } } },/' medusa-config.ts; \
     fi && \
     grep -q 'allowedHosts' medusa-config.ts && \
     echo "medusa-config.ts patched for allowedHosts"
