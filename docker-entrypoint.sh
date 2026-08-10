@@ -107,25 +107,55 @@ EOF
   echo "[dev-entrypoint] .env created."
 fi
 
-# --- (4b) Enforce http.port = 9002 in medusa-config.ts --------------------
-# The in-container shared-port proxy (shared-port-proxy.ts) owns port 9000.
-# Medusa MUST listen on 9002 to avoid EADDRINUSE.  PORT=9002 is also set at
-# exec-time below, but some codepaths read the config value directly —
-# make both agree, on EVERY boot (not just first-boot seed), so bind-mount
-# volumes created by older image versions still work after upgrade.
-if [ -f "$APP_DIR/medusa-config.ts" ]; then
-  if grep -qE 'http:[[:space:]]*\{' "$APP_DIR/medusa-config.ts"; then
-    if grep -qE '(^|[[:space:]])port:[[:space:]]*9002[,[:space:]]*$' "$APP_DIR/medusa-config.ts" 2>/dev/null; then
-      : # already correct, nothing to do
-    elif grep -qE '(^|[[:space:]])port:[[:space:]]*[0-9]+' "$APP_DIR/medusa-config.ts" 2>/dev/null; then
-      echo "[dev-entrypoint] Correcting medusa-config.ts http.port to 9002 (proxy owns port 9000) ..."
-      sed -i -E 's/((^|[[:space:]])port:[[:space:]]*)[0-9]+/\19002/' "$APP_DIR/medusa-config.ts"
+# --- (4b) Sync admin-vite-overrides.ts + patch medusa-config.ts ---------
+# The in-container shared-port proxy (shared-port-proxy.ts) owns port 9000,
+# so Medusa MUST listen on 9002.  admin-vite-overrides.ts provides the
+# admin.vite function with all fixes (allowedHosts, fs.strict, HMR port,
+# resolve-abs-fs-paths plugin that fixes the i18n blank-page bug).
+#
+# This runs on EVERY boot (not just first-boot seed) so that bind-mount
+# volumes created by older image versions get upgraded automatically.
+
+# Sync the overrides file (always overwrite — it's version-controlled, not
+# user-editable).  Source from /usr/local/bin/ (always present in the image).
+if [ -f /usr/local/bin/admin-vite-overrides.ts ]; then
+  cp -a /usr/local/bin/admin-vite-overrides.ts "$APP_DIR/admin-vite-overrides.ts"
+fi
+
+_CFG="$APP_DIR/medusa-config.ts"
+if [ -f "$_CFG" ]; then
+  # Fix CJS/ESM if stale (older volumes may still have module.exports)
+  sed -i 's/module\.exports = defineConfig/export default defineConfig/' "$_CFG"
+
+  # Add import at top (idempotent)
+  if ! grep -q 'import adminVite from "./admin-vite-overrides.ts"' "$_CFG"; then
+    sed -i '1i import adminVite from "./admin-vite-overrides.ts";' "$_CFG"
+  fi
+
+  # Remove any existing one-line `admin: { vite: ... }` block.
+  # All previous image versions injected the admin block as a single line,
+  # so this catches volumes patched by any prior release.
+  sed -i '/admin: { vite:/d' "$_CFG"
+
+  # Inject fresh `admin: { vite: adminVite },` before projectConfig (idempotent)
+  if ! grep -q 'admin: { vite: adminVite }' "$_CFG"; then
+    sed -i 's|projectConfig: {|admin: { vite: adminVite },\n  projectConfig: {|' "$_CFG"
+  fi
+
+  # Enforce http.port = 9002 (proxy owns 9000)
+  if grep -qE 'http:[[:space:]]*\{' "$_CFG"; then
+    if grep -qE '(^|[[:space:]])port:[[:space:]]*9002' "$_CFG" 2>/dev/null; then
+      : # already 9002
+    elif grep -qE '(^|[[:space:]])port:[[:space:]]*[0-9]+' "$_CFG" 2>/dev/null; then
+      echo "[dev-entrypoint] Correcting http.port to 9002 (proxy owns 9000) ..."
+      sed -i -E 's/((^|[[:space:]])port:[[:space:]]*)[0-9]+/\19002/' "$_CFG"
     else
-      echo "[dev-entrypoint] Injecting http.port = 9002 into medusa-config.ts (proxy owns port 9000) ..."
-      sed -i 's/http: {/http: {\n    port: 9002,/' "$APP_DIR/medusa-config.ts"
+      echo "[dev-entrypoint] Injecting http.port = 9002 ..."
+      sed -i 's/http: {/http: {\n    port: 9002,/' "$_CFG"
     fi
   fi
 fi
+unset _CFG
 
 # --- (5) Normalise DATABASE_URL -------------------------------------------
 if [ -n "${DATABASE_URL:-}" ]; then
