@@ -38,12 +38,25 @@ fi
 
 # --- (3) Patch trace-mapping for Bun compatibility (#17303) ---------------
 # Bun's runtime can produce -1 column values in stack traces; trace-mapping
-# throws on negative columns, crashing medusa develop.  Return a null result
-# instead of throwing (matches the production Dockerfile patch).
+# throws on negative columns, crashing medusa develop.  Replace the throw
+# (or any previous broken replacement that writes to undefined variables)
+# with a safe `return {source:null,line:null,column:null,name:null}`.
+#
+# NOTE: Previous iterations of this entrypoint accidentally replaced the
+# COL_GTR_EQ_ZERO throw with `aNeedle[aColumnName]=0`, referencing undefined
+# variables that caused a ReferenceError.  The logic here is therefore:
+#   a) Revert any stale `aNeedle[aColumnName]=0` back to the original throw.
+#   b) Apply the correct null-return patch to both throw sites.
+# Running (a)+(b) every boot makes the patch idempotent regardless of the
+# prior state of the file (fresh / partially patched / broken).
 _patch_trace_mapping() {
   _file="$1"
   [ -f "$_file" ] || return 0
-  # Only patch if we still see the throw statements (idempotent)
+  # (a) revert the broken aNeedle replacement back to the throw
+  if grep -q 'aNeedle\[aColumnName\]=0' "$_file" 2>/dev/null; then
+    sed -i 's/aNeedle\[aColumnName\]=0/throw new Error(COL_GTR_EQ_ZERO)/g' "$_file"
+  fi
+  # (b) now always re-apply the correct null-return patch for both throw sites
   if grep -q 'throw new Error(COL_GTR_EQ_ZERO)\|throw new Error(LINE_GTR_ZERO)' "$_file" 2>/dev/null; then
     echo "[dev-entrypoint] Patching $_file (Bun #17303 workaround)..."
     sed -i 's/throw new Error(COL_GTR_EQ_ZERO)/return {source:null,line:null,column:null,name:null}/g' "$_file"
@@ -93,10 +106,20 @@ fi
 # production entrypoint.  Use `bun run migrate` (not bunx) to avoid CJS/ESM
 # parsing issues in Medusa's config loader.
 echo "[dev-entrypoint] Running database migrations ..."
-bun run migrate 2>&1 || {
-  echo "[dev-entrypoint] Migration failed — dev server may crash if tables are missing."
-}
-echo "[dev-entrypoint] Database migrations complete."
+if ! MIGRATE_LOG=$(bun run migrate 2>&1); then
+  echo "$MIGRATE_LOG"
+  echo "[dev-entrypoint] Migration failed — retrying once in 5s ..."
+  sleep 5
+  if ! MIGRATE_LOG=$(bun run migrate 2>&1); then
+    echo "$MIGRATE_LOG"
+    echo "[dev-entrypoint] Migration retried and failed — dev server may crash if tables are missing."
+  else
+    echo "[dev-entrypoint] Retry succeeded.  Database migrations complete."
+  fi
+else
+  echo "$MIGRATE_LOG"
+  echo "[dev-entrypoint] Database migrations complete."
+fi
 
 # --- (7) Auto-create admin user (optional) --------------------------------
 ADMIN_EMAIL="${MEDUSA_ADMIN_EMAIL:-}"
