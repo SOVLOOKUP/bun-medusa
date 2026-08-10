@@ -58,6 +58,9 @@ WORKDIR /app/medusa
 # Copy built artifacts and source from builder
 COPY --from=builder /app/medusa .
 
+# Debug: verify admin build output was copied
+RUN find . -name "index.html" -not -path "./node_modules/*" 2>/dev/null || echo "WARN: No index.html in runner"
+
 # Copy production entrypoint
 COPY docker-entrypoint-prod.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
