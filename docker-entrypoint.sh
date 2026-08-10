@@ -379,7 +379,7 @@ unset _VITE_CACHE _N_FILES
 # deployment — browser always connected to :9001 regardless of define).
 #
 # To make set-up zero-config for the common case where the user already
-# passes ADMIN_URL (e.g. "https://medusa.metapoint.tech:8443/app"), parse
+# passes ADMIN_URL (e.g. "https://medusa.example.com:8443/app"), parse
 # protocol / host / port out of it and export HMR_* automatically.
 #
 # Rules:
