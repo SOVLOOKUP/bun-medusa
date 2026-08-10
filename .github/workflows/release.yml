@@ -257,9 +257,97 @@ jobs:
         if: always()
         run: docker rm -f medusa-test || true
 
+  # ── Smoke test the freshly pushed DEV image ───────────────────────
+  smoke-test-dev:
+    needs: [get-versions, build-and-push-dev]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: medusa
+          POSTGRES_PASSWORD: medusa_password
+          POSTGRES_DB: medusa
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U medusa"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Medusa dev container
+        run: |
+          REPO_LC="${{ github.repository }}"
+          REPO_LC="${REPO_LC,,}"
+          IMAGE="ghcr.io/${REPO_LC}:dev"
+          echo "Pulling and running $IMAGE ..."
+          docker run -d --name medusa-dev-test \
+            --network host \
+            -e DATABASE_URL="postgres://medusa:medusa_password@localhost:5432/medusa?sslmode=disable" \
+            -e REDIS_URL="redis://localhost:6379" \
+            -e JWT_SECRET="supersecret" \
+            -e COOKIE_SECRET="supersecret" \
+            -e MEDUSA_ADMIN_EMAIL="admin@test.com" \
+            -e MEDUSA_ADMIN_PASSWORD="supersecret123" \
+            "$IMAGE"
+
+          # Dev server boots Vite + TS source watchers, so allow up to ~8 min
+          echo "Waiting for Medusa dev server to start..."
+          for i in $(seq 1 96); do
+            if curl -sf http://localhost:9000/health > /dev/null 2>&1; then
+              echo "Medusa dev server is healthy!"
+              curl -s http://localhost:9000/health
+              exit 0
+            fi
+            if ! docker ps | grep -q medusa-dev-test; then
+              echo "Container exited early. Logs:"
+              docker logs medusa-dev-test
+              exit 1
+            fi
+            echo "  attempt $i/96 - waiting..."
+            sleep 5
+          done
+
+          echo "Medusa dev server did not become healthy within 8 minutes."
+          echo "=== Container logs ==="
+          docker logs medusa-dev-test 2>&1 | tail -80
+          exit 1
+
+      - name: Show container logs on failure
+        if: failure()
+        run: |
+          echo "=== Container logs ==="
+          docker logs medusa-dev-test 2>&1 | tail -120
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f medusa-dev-test || true
+
   # ── Build 1Panel app package + attach to release ──────────────────
   build-package:
-    needs: [get-versions, build-and-push, smoke-test]
+    needs: [get-versions, build-and-push, smoke-test, smoke-test-dev]
     runs-on: ubuntu-latest
     permissions:
       contents: write

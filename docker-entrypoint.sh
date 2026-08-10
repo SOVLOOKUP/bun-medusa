@@ -37,17 +37,22 @@ fi
 
 # --- (3) Patch trace-mapping for Bun compatibility (#17303) ---------------
 # Bun's runtime can produce -1 column values in stack traces; trace-mapping
-# throws on negative columns, crashing medusa develop.  Clamp -1 to 0.
-TRACE_MAP="$APP_DIR/node_modules/@jridgewell/trace-mapping/dist/trace-mapping.umd.js"
-if [ -f "$TRACE_MAP" ] && ! grep -q 'aNeedle\[aColumnName\]=0' "$TRACE_MAP" 2>/dev/null; then
-  echo "[dev-entrypoint] Patching @jridgewell/trace-mapping (Bun #17303 workaround)..."
-  sed -i 's/throw new Error(COL_GTR_EQ_ZERO)/aNeedle[aColumnName]=0/g' "$TRACE_MAP"
-fi
+# throws on negative columns, crashing medusa develop.  Return a null result
+# instead of throwing (matches the production Dockerfile patch).
+_patch_trace_mapping() {
+  _file="$1"
+  [ -f "$_file" ] || return 0
+  # Only patch if we still see the throw statements (idempotent)
+  if grep -q 'throw new Error(COL_GTR_EQ_ZERO)\|throw new Error(LINE_GTR_ZERO)' "$_file" 2>/dev/null; then
+    echo "[dev-entrypoint] Patching $_file (Bun #17303 workaround)..."
+    sed -i 's/throw new Error(COL_GTR_EQ_ZERO)/return {source:null,line:null,column:null,name:null}/g' "$_file"
+    sed -i 's/throw new Error(LINE_GTR_ZERO)/return {source:null,line:null,column:null,name:null}/g' "$_file"
+  fi
+}
+_patch_trace_mapping "$APP_DIR/node_modules/@jridgewell/trace-mapping/dist/trace-mapping.umd.js"
 # Also patch the source-map-support copy if it bundles its own trace-mapping
 for tm in "$APP_DIR"/node_modules/@cspotcode/source-map-support/node_modules/@jridgewell/trace-mapping/dist/trace-mapping.umd.js; do
-  if [ -f "$tm" ] && ! grep -q 'aNeedle\[aColumnName\]=0' "$tm" 2>/dev/null; then
-    sed -i 's/throw new Error(COL_GTR_EQ_ZERO)/aNeedle[aColumnName]=0/g' "$tm"
-  fi
+  _patch_trace_mapping "$tm"
 done
 
 # --- (4) Generate .env from environment variables (if absent) -------------

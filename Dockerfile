@@ -39,6 +39,14 @@ ENV BUN_CONFIG_REGISTRY=https://registry.npmmirror.com
 # TypeScript, the Vite admin dev server, etc.
 RUN bun install
 
+# Patch @jridgewell/trace-mapping: return null result instead of throwing
+# "column must be >= 0" when Bun passes negative column values during
+# decorator stack trace resolution.  Idempotent with the entrypoint patch.
+RUN sed -i 's/throw new Error(COL_GTR_EQ_ZERO)/return {source:null,line:null,column:null,name:null}/g' \
+    node_modules/@jridgewell/trace-mapping/dist/trace-mapping.umd.js && \
+    sed -i 's/throw new Error(LINE_GTR_ZERO)/return {source:null,line:null,column:null,name:null}/g' \
+    node_modules/@jridgewell/trace-mapping/dist/trace-mapping.umd.js
+
 COPY docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
