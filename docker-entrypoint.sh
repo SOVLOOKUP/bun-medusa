@@ -368,6 +368,77 @@ else
 fi
 unset _VITE_CACHE _N_FILES
 
+# --- (7c) Derive browser-facing HMR endpoint -------------------------------
+#
+# admin-vite-overrides.ts now reads LITERAL values out of process.env
+# for server.hmr.{host,protocol,clientPort} (priority HMR_* > defaults),
+# because Vite bakes these constants DIRECTLY into the shipped
+# @vite/client source at transform time.  The earlier `config.define`
+# trick did NOT work: @vite/client uses an internal transform pipeline
+# that bypasses user-defined defines (confirmed live against the user's
+# deployment — browser always connected to :9001 regardless of define).
+#
+# To make set-up zero-config for the common case where the user already
+# passes ADMIN_URL (e.g. "https://medusa.metapoint.tech:8443/app"), parse
+# protocol / host / port out of it and export HMR_* automatically.
+#
+# Rules:
+#   • Explicit HMR_HOSTNAME / HMR_PROTOCOL / HMR_CLIENT_PORT → keep them.
+#   • Else if ADMIN_URL is set → parse and fill any missing HMR_* from it.
+#   • Protocol is rewritten: http→ws, https→wss (WebSocket equivalent).
+#   • Standard ports (80 / 443) are exported as the EMPTY STRING — this
+#     is the sentinel Vite needs to avoid falling back to hmr.port (9001)
+#     because browsers drop location.port on standard ports.
+if [ -n "${ADMIN_URL:-}" ]; then
+  _HMR_H="${HMR_HOSTNAME:-}"
+  _HMR_P="${HMR_PROTOCOL:-}"
+  _HMR_CP="${HMR_CLIENT_PORT:-}"
+  if [ -z "$_HMR_H" ] || [ -z "$_HMR_P" ] || [ -z "$_HMR_CP" ]; then
+    # Parse ADMIN_URL with awk: works with busybox awk, no python/node.
+    # Strip trailing path (/app or similar), then split proto / host[:port]
+    _PARSED=$(printf '%s' "$ADMIN_URL" | awk -F'/' '{
+      proto=$1; sub(/:$/,"",proto);
+      authority=$3;
+      n=split(authority, parts, ":");
+      host=parts[1];
+      port=(n==2) ? parts[2] : "";
+      if (port=="") { if (proto=="https") port=443; else if (proto=="http") port=80; }
+      wsproto=(proto=="https") ? "wss" : "ws";
+      printf "%s|%s|%s", host, wsproto, port;
+    }')
+    if [ -n "$_PARSED" ]; then
+      _AU_HOST="${_PARSED%%|*}"
+      _REST="${_PARSED#*|}"
+      _AU_PROTO="${_REST%%|*}"
+      _AU_PORT="${_REST#*|}"
+      [ -z "$_HMR_H"  ] && export HMR_HOSTNAME="$_AU_HOST"
+      [ -z "$_HMR_P"  ] && export HMR_PROTOCOL="$_AU_PROTO"
+      if [ -z "$_HMR_CP" ]; then
+        if [ "$_AU_PORT" = "80" ] || [ "$_AU_PORT" = "443" ]; then
+          # Empty string sentinel → Vite uses page implied port.
+          export HMR_CLIENT_PORT=""
+        else
+          export HMR_CLIENT_PORT="$_AU_PORT"
+        fi
+      fi
+      unset _AU_HOST _AU_PROTO _AU_PORT
+    fi
+    unset _PARSED
+  fi
+  unset _HMR_H _HMR_P _HMR_CP
+fi
+echo "[dev-entrypoint] Browser-facing HMR endpoint:"
+echo "                 HMR_HOSTNAME    = ${HMR_HOSTNAME:-<inherit from page hostname>}"
+echo "                 HMR_PROTOCOL    = ${HMR_PROTOCOL:-ws (defaults, NO TLS — please set ADMIN_URL=https://...)}"
+case "${HMR_CLIENT_PORT+-x}" in
+  +x) if [ -z "$HMR_CLIENT_PORT" ]; then
+        echo "                 HMR_CLIENT_PORT = <empty string = keep page's standard 80/443 port>"
+      else
+        echo "                 HMR_CLIENT_PORT = $HMR_CLIENT_PORT"
+      fi ;;
+  *)  echo "                 HMR_CLIENT_PORT = <unset, fallthrough to hmr.port 9001 — BAD behind reverse proxy>" ;;
+esac
+
 # --- (8) Shared-port proxy + dev server -----------------------------------
 # shared-port-proxy.ts (Bun) binds to container port 9000 and dispatches:
 #   • HTTP + non-HMR WebSocket traffic   → 127.0.0.1:9002 (Medusa)

@@ -52,44 +52,71 @@ const adminVite = (config: any): any => {
   //   Vite v5 DOES NOT leave host/protocol/port blank and fall back to
   //   location.* the way earlier versions did.  Instead it bakes
   //   __HMR_HOSTNAME__ / __HMR_PROTOCOL__ / __HMR_CLIENT_PORT__ into the
-  //   compiled @vite/client source via `define`.  Our previous attempt
-  //   relied on hmr.host/protocol/clientPort being undefined, which made
-  //   Vite's defaults hardcode hmr.port (9001) as the browser-facing port
-  //   and 'ws' as the protocol — both wrong behind an HTTPS reverse proxy
-  //   on a non-standard port like 8443.
+  //   admin-bundler generates the @vite/client bootstrap, it READS LITERAL
+  //   VALUES OUT OF `config.server.hmr` (host, port, clientPort, protocol,
+  //   path) and HARD-CODES them as `__HMR_PORT__`, `__HMR_HOSTNAME__`,
+  //   `__HMR_PROTOCOL__`, `__HMR_CLIENT_PORT__` constants into the shipped
+  //   client.mjs source.  Text substitution via `config.define` does NOT
+  //   work because @vite/client is an internal Vite module that goes
+  //   through a dedicated transform pipeline that bypasses user-defined
+  //   defines — evidence from the live deployment:
+  //     config.define.__HMR_CLIENT_PORT__ = "(location.port || ...)"
+  //     was correctly set (confirmed via [admin-vite-config] banner) but
+  //     the browser still connected to `wss://...:9001/...`, i.e. the
+  //     baked-in value was still hmr.port (9001) instead of the expression.
   //
-  //   FIX: use config.define to OVERWRITE the injected HMR constants with
-  //   raw JS expressions that evaluate AT RUNTIME in the browser against
-  //   `location`.  `define` values are TEXT substitutions (no extra
-  //   quoting), so writing `"location.hostname"` injects the literal
-  //   expression, not a JSON-stringified string.  This works for EVERY
-  //   deployment without any env vars — whether the user terminates on
-  //   :443, :8443, :80, :8080, or any other port.
+  //   FIX: compute the LITERAL browser-facing HMR endpoint values at
+  //   vite-function-call time and write them directly into server.hmr.
+  //   Source of truth, in priority order:
+  //     1. Explicit HMR_HOSTNAME / HMR_PROTOCOL / HMR_CLIENT_PORT env vars
+  //        set by the operator / docker-entrypoint.sh
+  //     2. Parsed from ADMIN_URL env var (e.g. "https://medusa.example.com:8443"
+  //        → wss, medusa.example.com, 8443) — entrypoint parses this too
+  //        so either env source ends up in process.env.HMR_* below
+  //     3. Sensible defaults: hostname=null (location.hostname), protocol=ws,
+  //        clientPort=null (falls back to hmr.port = 9001 — only OK for
+  //        direct localhost dev, NOT behind a reverse proxy)
   //
-  //   __HMR_CLIENT_PORT__ expression handles standard ports too: browsers
-  //   leave location.port empty for :80 / :443, and an empty string is
-  //   falsy, so we fall back to literal '443' / '80' to prevent the
-  //   fallback `__HMR_CLIENT_PORT__ || __HMR_PORT__` from picking up
-  //   __HMR_PORT__ (the container-internal 9001 listener port).
+  //   clientPort: if the public port is 80 or 443 we MUST pass the literal
+  //   empty string "", because browsers omit location.port for standard
+  //   ports; @vite/client interprets "" as "no explicit clientPort, keep
+  //   the page's implied port" and will NOT fall through to hmr.port.
+  //   Any non-standard port (8443, 9810, etc.) is a literal number-string.
+  function _fromEnvOrAdminUrl(key: string) {
+    const v = process.env[key];
+    return v && String(v).trim() ? String(v).trim() : undefined;
+  }
+  const hmrHost = _fromEnvOrAdminUrl("HMR_HOSTNAME") ?? null;
+  const hmrProtocol = _fromEnvOrAdminUrl("HMR_PROTOCOL") ?? "ws";
+  const hmrClientPortEnv = _fromEnvOrAdminUrl("HMR_CLIENT_PORT");
+  const hmrClientPort =
+    hmrClientPortEnv === "80" || hmrClientPortEnv === "443"
+      ? ""
+      : (hmrClientPortEnv ?? null);
+
   config.server.hmr = {
     port: 9001,
     path: "/vite-hmr",
+    host: hmrHost,
+    protocol: hmrProtocol as "ws" | "wss",
+    clientPort: hmrClientPort as any,
   };
 
-  // Explicit HMR_CLIENT_PORT override (rare — used ONLY when the reverse
-  // proxy exposes HMR on a DIFFERENT port than the admin HTTP page, e.g.
-  // if user still wants a separate /vite-hmr location entry).  When set,
-  // we bake that literal number into __HMR_CLIENT_PORT__.  Otherwise we
-  // bake the location.port expression.
-  const explicitClientPort = process.env.HMR_CLIENT_PORT
-    ? JSON.stringify(Number(process.env.HMR_CLIENT_PORT))
-    : "(location.port || (location.protocol === 'https:' ? '443' : '80'))";
-
+  // Belt-and-suspenders: define the same variables so EVEN IF a random
+  // business JS file uses them, the values match what's baked into
+  // @vite/client.  (Vite define does TEXT substitution — no extra quotes.)
   config.define = config.define || {};
-  config.define.__HMR_HOSTNAME__ = "location.hostname";
-  config.define.__HMR_PROTOCOL__ =
-    "(location.protocol === 'https:' ? 'wss' : 'ws')";
-  config.define.__HMR_CLIENT_PORT__ = explicitClientPort;
+  config.define.__HMR_HOSTNAME__ = hmrHost
+    ? JSON.stringify(hmrHost)
+    : "location.hostname";
+  config.define.__HMR_PROTOCOL__ = JSON.stringify(hmrProtocol);
+  const explicitClientPortLiteral =
+    hmrClientPort === ""
+      ? "''"
+      : hmrClientPort
+        ? JSON.stringify(hmrClientPort)
+        : "(location.port || (location.protocol === 'https:' ? '443' : '80'))";
+  config.define.__HMR_CLIENT_PORT__ = explicitClientPortLiteral;
 
   // (C2) Keep CJS deps optimized, but NEVER do lazy-route triggered
   //      on-demand re-discovery.
@@ -170,6 +197,9 @@ const adminVite = (config: any): any => {
       `[admin-vite-config] server.fs.allow = ${JSON.stringify(config.server?.fs?.allow ?? [])}`,
       `[admin-vite-config] server.hmr.port = ${String(config.server?.hmr?.port)}`,
       `[admin-vite-config] server.hmr.path = ${String(config.server?.hmr?.path)}`,
+      `[admin-vite-config] server.hmr.host = ${JSON.stringify(config.server?.hmr?.host ?? null)}`,
+      `[admin-vite-config] server.hmr.protocol = ${JSON.stringify(config.server?.hmr?.protocol ?? null)}`,
+      `[admin-vite-config] server.hmr.clientPort = ${JSON.stringify(config.server?.hmr?.clientPort ?? null)}`,
       `[admin-vite-config] define.__HMR_HOSTNAME__ = ${String(config.define?.__HMR_HOSTNAME__)}`,
       `[admin-vite-config] define.__HMR_PROTOCOL__ = ${String(config.define?.__HMR_PROTOCOL__)}`,
       `[admin-vite-config] define.__HMR_CLIENT_PORT__ = ${String(config.define?.__HMR_CLIENT_PORT__)}`,
