@@ -7,16 +7,9 @@
 #
 FROM oven/bun:debian
 
-# Configure apt sources — replace Debian mirrors
-RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
-    sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources; \
-    sed -i 's|http://security.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources; \
-    elif [ -f /etc/apt/sources.list ]; then \
-    sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list; \
-    sed -i 's|http://security.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list; \
-    fi && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends git ca-certificates && \
+# Install git (needed to clone Medusa starter repo)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -31,12 +24,10 @@ RUN git clone --depth 1 "$STARTER_REPO" /app/medusa && \
 # entrypoint copies into the bind-mount on first boot.
 RUN cp -a /app/medusa /app/medusa-seed
 
-# Use the npm mirror to avoid rate-limiting (429) from npmjs.org.
-ENV BUN_CONFIG_REGISTRY=https://registry.npmmirror.com
+WORKDIR /app/medusa
 
 # Install ALL dependencies (including devDependencies) — dev mode needs
 # TypeScript, the Vite admin dev server, etc.
-WORKDIR /app/medusa
 RUN bun install
 
 COPY docker-entrypoint.sh /usr/local/bin/

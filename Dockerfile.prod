@@ -6,16 +6,9 @@
 # ── Stage 1: Build ──────────────────────────────────────────────────
 FROM oven/bun:debian AS builder
 
-# Configure apt sources — replace Debian mirrors and fix source format
-RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
-    sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources; \
-    sed -i 's|http://security.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources; \
-    elif [ -f /etc/apt/sources.list ]; then \
-    sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list; \
-    sed -i 's|http://security.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list; \
-    fi && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends git ca-certificates && \
+# Install git (needed to clone Medusa starter repo)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -25,9 +18,6 @@ ARG MEDUSA_VERSION=2.18.0
 ARG STARTER_REPO=https://github.com/medusajs/medusa-starter-default.git
 RUN git clone --depth 1 "$STARTER_REPO" /app/medusa && \
     rm -rf /app/medusa/.git
-
-# Use npm mirror to avoid rate-limiting
-ENV BUN_CONFIG_REGISTRY=https://registry.npmmirror.com
 
 WORKDIR /app/medusa
 
