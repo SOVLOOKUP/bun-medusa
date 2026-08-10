@@ -42,8 +42,15 @@ RUN sed -i 's/throw new Error(COL_GTR_EQ_ZERO)/return {source:null,line:null,col
 # 'export default' for pure ESM.
 RUN sed -i 's/module\.exports = defineConfig/export default defineConfig/' medusa-config.ts
 
-# Add migrate + create-admin scripts to package.json
-RUN sed -i 's/"start": "medusa start"/"start": "medusa start",\n    "migrate": "medusa db:migrate",\n    "create-admin": "medusa user -e \$MEDUSA_ADMIN_EMAIL -p \$MEDUSA_ADMIN_PASSWORD"/' package.json
+# Add migrate + create-admin scripts to package.json using bun for proper
+# JSON parsing (sed-based patching is fragile and can corrupt the file).
+# $MEDUSA_ADMIN_EMAIL / $MEDUSA_ADMIN_PASSWORD stay as literal shell
+# variables in the script string — they are expanded at runtime by the
+# shell when `bun run create-admin` executes.
+RUN bun -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json","utf-8"));p.scripts.start=p.scripts.start||"medusa start";p.scripts.migrate="medusa db:migrate";p.scripts["create-admin"]="medusa user -e $MEDUSA_ADMIN_EMAIL -p $MEDUSA_ADMIN_PASSWORD";fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")' && \
+    grep -q '"start"' package.json && \
+    grep -q '"migrate"' package.json && \
+    echo "package.json scripts OK"
 
 # Build the admin dashboard (required for production server)
 RUN bun run build
