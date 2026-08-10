@@ -102,21 +102,19 @@ const adminVite = (config: any): any => {
     clientPort: hmrClientPort as any,
   };
 
-  // Belt-and-suspenders: define the same variables so EVEN IF a random
-  // business JS file uses them, the values match what's baked into
-  // @vite/client.  (Vite define does TEXT substitution — no extra quotes.)
-  config.define = config.define || {};
-  config.define.__HMR_HOSTNAME__ = hmrHost
-    ? JSON.stringify(hmrHost)
-    : "location.hostname";
-  config.define.__HMR_PROTOCOL__ = JSON.stringify(hmrProtocol);
-  const explicitClientPortLiteral =
-    hmrClientPort === ""
-      ? "''"
-      : hmrClientPort
-        ? JSON.stringify(hmrClientPort)
-        : "(location.port || (location.protocol === 'https:' ? '443' : '80'))";
-  config.define.__HMR_CLIENT_PORT__ = explicitClientPortLiteral;
+  // NOTE: We intentionally do NOT touch config.define for HMR variables.
+  // Earlier attempts to set __HMR_HOSTNAME__ / __HMR_PROTOCOL__ /
+  // __HMR_CLIENT_PORT__ via config.define caused a FATAL SyntaxError in
+  // the generated `env.mjs`: the values got re-interpreted as object KEYS
+  // instead of values, producing malformed JS like:
+  //   { ..., ""medusa.example.com"": "medusa.example.com", ""wss"": "wss" }
+  // which threw "Unexpected identifier 'medusa'".
+  //
+  // Per original investigation, config.define is ALSO ineffective for
+  // @vite/client because the client goes through a dedicated transform
+  // pipeline that reads LITERAL values from `config.server.hmr` (which
+  // we already set above).  So removing these defines is both safe AND
+  // necessary.
 
   // (C2) Keep CJS deps optimized, but NEVER do lazy-route triggered
   //      on-demand re-discovery.
@@ -200,9 +198,7 @@ const adminVite = (config: any): any => {
       `[admin-vite-config] server.hmr.host = ${JSON.stringify(config.server?.hmr?.host ?? null)}`,
       `[admin-vite-config] server.hmr.protocol = ${JSON.stringify(config.server?.hmr?.protocol ?? null)}`,
       `[admin-vite-config] server.hmr.clientPort = ${JSON.stringify(config.server?.hmr?.clientPort ?? null)}`,
-      `[admin-vite-config] define.__HMR_HOSTNAME__ = ${String(config.define?.__HMR_HOSTNAME__)}`,
-      `[admin-vite-config] define.__HMR_PROTOCOL__ = ${String(config.define?.__HMR_PROTOCOL__)}`,
-      `[admin-vite-config] define.__HMR_CLIENT_PORT__ = ${String(config.define?.__HMR_CLIENT_PORT__)}`,
+      `[admin-vite-config] (config.define for HMR intentionally UNSET — see NOTE above)`,
       `[admin-vite-config] optimizeDeps.noDiscovery = ${String(config.optimizeDeps.noDiscovery)}`,
       `[admin-vite-config] optimizeDeps.include count = ${config.optimizeDeps.include.length}`,
       `[admin-vite-config] resolve.plugins resolve-abs-fs-paths = ${(config.resolve?.plugins ?? []).some((p) => p && (p as any).name === "resolve-abs-fs-paths")}`,
