@@ -1,49 +1,53 @@
-# 1Panel 环境定制版 docker-compose —— 一键启动,自动迁移,自动建管理员。
+# Development environment for 1Panel — uses external postgres + redis.
 #
-# 复用 1Panel 已部署的 PostgreSQL 和 Redis(带密码认证),仅启动 medusa 容器,
-# 并加入 external 的 1panel-network。
+# Same source-mount + hot-reload workflow as docker-compose.dev.yml, but
+# reuses the PostgreSQL and Redis/Valkey instances already managed by
+# 1Panel (joined to the external 1panel-network).
 #
-# 所有密码 / 密钥都从 .env 读取,不硬编码在本文件中。
+# Usage:
+#   1. cp .env.example .env  &&  fill in DB/Redis host + passwords + secrets
+#   2. docker compose -f docker-compose.dev.1panel.yml up -d --build
+#   3. open http://<server-ip>:5173/app  (admin, hot-reload)
 #
-# 使用方式(仅需两步):
-#   1. cp .env.example .env  并填入所有必填项(数据库密码、Redis 密码、JWT 密钥等)
-#   2. docker compose -f docker-compose.1panel.yml up -d
-#
-# 迁移 + 管理员账号创建全部自动完成,直接访问 http://<host>:9000/app 登录。
-#
-# 前提:
-#   - 1Panel 已部署 PostgreSQL 和 Redis/Valkey,且都加入了 1panel-network
-#   - PostgreSQL 里已创建数据库 medusa 并授权用户 medusa
-#   - Docker 网络 1panel-network 存在
+# Prerequisites:
+#   - 1Panel has postgres + redis on 1panel-network
+#   - PostgreSQL has database `medusa` with user `medusa` granted
+#   - ./medusa-app/ will be auto-seeded on first boot (no need to create it)
 
 services:
   medusa:
-    image: ghcr.io/sovlookup/bun-medusa:2.18.0
-    container_name: medusa_backend
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: medusa_dev_backend
     restart: unless-stopped
     networks:
       - 1panel-network
     ports:
-      - "9000:9000"
+      - "9000:9000"   # Backend API + Admin dashboard
     environment:
-      NODE_ENV: production
-      # PostgreSQL: 从 .env 读取 POSTGRES_PASSWORD / POSTGRES_HOST / POSTGRES_DB / POSTGRES_USER
+      NODE_ENV: development
       DATABASE_URL: postgres://${POSTGRES_USER:-medusa}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:5432/${POSTGRES_DB:-medusa}
-      # Redis/Valkey: 从 .env 读取 REDIS_PASSWORD / REDIS_HOST
       REDIS_URL: redis://:${REDIS_PASSWORD}@${REDIS_HOST:-redis}:6379
-      # 启动前自动跑数据库迁移(幂等,已执行的会跳过)
-      MEDUSA_AUTO_MIGRATE: "true"
-      # 首次启动自动创建管理员账号(已存在则跳过)
+      JWT_SECRET: ${JWT_SECRET:-change_me_jwt}
+      COOKIE_SECRET: ${COOKIE_SECRET:-change_me_cookie}
+      STORE_CORS: ${STORE_CORS:-http://localhost:8000}
+      ADMIN_CORS: ${ADMIN_CORS:-http://localhost:5173,http://localhost:9000}
+      AUTH_CORS: ${AUTH_CORS:-http://localhost:5173,http://localhost:8000,http://localhost:9000}
       MEDUSA_ADMIN_EMAIL: ${MEDUSA_ADMIN_EMAIL:-admin@medusa.local}
       MEDUSA_ADMIN_PASSWORD: ${MEDUSA_ADMIN_PASSWORD:-SuperSecret123}
     env_file:
       - .env
     volumes:
-      - medusa_uploads:/app/uploads
+      # Source code mount — edit ./medusa-app/src/ on the host, hot-reload in container.
+      - ./medusa-app:/app/medusa
+      # Keep the container's installed node_modules.
+      - medusa_node_modules:/app/medusa/node_modules
+    command: ["bun", "run", "dev"]
 
 networks:
   1panel-network:
     external: true
 
 volumes:
-  medusa_uploads:
+  medusa_node_modules:

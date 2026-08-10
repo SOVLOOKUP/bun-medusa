@@ -6,3 +6,6 @@
 *.swp
 .idea/
 .vscode/
+
+# Development source code (auto-seeded by docker-compose.dev*.yml on first boot)
+medusa-app/

@@ -1,27 +1,26 @@
-# docker-compose for the Bun-built Medusa image published to GHCR.
+# Development environment — source code mount + hot reload.
 #
-# Usage (one command — migrations run automatically on first boot):
-#   1. cp .env.example .env  &&  fill in the required secrets
-#   2. docker compose up -d
-#   3. docker compose run --rm medusa bunx medusa user -e admin@example.com -p YourPassword123
-#   4. open http://localhost:9000/app
+# Brings up postgres + redis + a Medusa dev container that runs
+# `medusa develop` with the source code bind-mounted from ./medusa-app.
 #
-# The image ships a self-contained production build: the admin dashboard is
-# compiled into the image and served from http://localhost:9000/app (no
-# separate 5173 dev server, no source mount).
+# On first boot the entrypoint automatically seeds ./medusa-app with the
+# official starter source, installs dependencies, and creates the admin
+# user.  After that you can edit files in ./medusa-app/src/ and the dev
+# server hot-reloads instantly.
 #
-# Notes:
-#   * The bundled entrypoint (docker-entrypoint-medusa.sh) automatically
-#     appends ?sslmode=disable&connect_timeout=30 to DATABASE_URL so the
-#     default self-hosted plain-TCP Postgres works without a 10 s SSL timeout.
-#   * When REDIS_URL is present the same entrypoint also overrides the four
-#     memory-backed default modules (cache / event_bus / workflows / locking)
-#     with their real Redis implementations.
+# Usage:
+#   1. cp .env.example .env  &&  fill in the secrets
+#   2. docker compose -f docker-compose.dev.yml up -d --build
+#   3. open http://localhost:5173/app  (admin, hot-reload)
+#      open http://localhost:9000/store/products  (store API)
+#
+# The first build is slow (clones + installs full deps).  Subsequent
+# starts are fast — the source and node_modules are cached in volumes.
 
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: medusa_postgres
+    container_name: medusa_dev_postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
@@ -37,7 +36,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: medusa_redis
+    container_name: medusa_dev_redis
     restart: unless-stopped
     command: redis-server --save 60 1 --loglevel warning
     volumes:
@@ -49,8 +48,10 @@ services:
       retries: 5
 
   medusa:
-    image: ghcr.io/sovlookup/bun-medusa:2.18.0
-    container_name: medusa_backend
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: medusa_dev_backend
     restart: unless-stopped
     depends_on:
       postgres:
@@ -58,26 +59,26 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "9000:9000"
+      - "9000:9000"   # Backend API + Admin dashboard
     environment:
-      NODE_ENV: production
-      # Query params sslmode=disable & connect_timeout=30 are appended
-      # automatically by the entrypoint; they do not need to be added here.
+      NODE_ENV: development
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/medusa-store
       REDIS_URL: redis://redis:6379
-      # Auto-run migrations on boot (idempotent — safe on every restart).
-      MEDUSA_AUTO_MIGRATE: "true"
-      # Auto-create admin user on first boot (skips if already exists).
-      # Override in .env with your own credentials.
+      JWT_SECRET: ${JWT_SECRET:-change_me_jwt}
+      COOKIE_SECRET: ${COOKIE_SECRET:-change_me_cookie}
+      STORE_CORS: ${STORE_CORS:-http://localhost:8000}
+      ADMIN_CORS: ${ADMIN_CORS:-http://localhost:5173,http://localhost:9000}
+      AUTH_CORS: ${AUTH_CORS:-http://localhost:5173,http://localhost:8000,http://localhost:9000}
       MEDUSA_ADMIN_EMAIL: ${MEDUSA_ADMIN_EMAIL:-admin@medusa.local}
       MEDUSA_ADMIN_PASSWORD: ${MEDUSA_ADMIN_PASSWORD:-SuperSecret123}
-    env_file:
-      - .env
-    # Persist user uploads / generated files across container restarts.
     volumes:
-      - medusa_uploads:/app/uploads
+      # Source code mount — edit ./medusa-app/src/ on the host, hot-reload in container.
+      - ./medusa-app:/app/medusa
+      # Keep the container's installed node_modules (don't let the bind-mount wipe it).
+      - medusa_node_modules:/app/medusa/node_modules
+    command: ["bun", "run", "dev"]
 
 volumes:
   pgdata:
   redisdata:
-  medusa_uploads:
+  medusa_node_modules:
