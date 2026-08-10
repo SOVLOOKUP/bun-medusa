@@ -43,7 +43,10 @@ RUN sed -i 's/throw new Error(COL_GTR_EQ_ZERO)/return {source:null,line:null,col
 RUN sed -i 's/module\.exports = defineConfig/export default defineConfig/' medusa-config.ts
 
 # Add migrate + create-admin scripts to package.json
-RUN sed -i 's/"start": "medusa start"/"start": "medusa start",\n    "migrate": "medusa db:migrate",\n    "create-admin": "medusa user"/' package.json
+RUN sed -i 's/"start": "medusa start"/"start": "medusa start",\n    "migrate": "medusa db:migrate",\n    "create-admin": "medusa user -e \$MEDUSA_ADMIN_EMAIL -p \$MEDUSA_ADMIN_PASSWORD"/' package.json
+
+# Build the admin dashboard (required for production server)
+RUN bun run build
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────
 FROM oven/bun:debian AS runner
