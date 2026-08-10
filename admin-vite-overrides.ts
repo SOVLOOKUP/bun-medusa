@@ -35,36 +35,61 @@ const adminVite = (config: any): any => {
     "/app/medusa/src",
   ];
 
-  // (C) server.hmr
-  //     port      = 9001 — container-internal port the Vite HMR WebSocket
-  //                         server listens on. NEVER random because the
-  //                         shared-port proxy routes /vite-hmr(*) → 9001.
-  //     clientPort          — the PORT used by the BROWSER to connect.
-  //                         Defaults to `hmr.port` if unset/falsy.  We
-  //                         cannot hardcode 8443 because the reverse proxy
-  //                         external port differs per deployment, so we
-  //                         let the user override via HMR_CLIENT_PORT env
-  //                         var.  If the env var is NOT set, we leave
-  //                         clientPort undefined which tells @vite/client
-  //                         to "follow the page URL" — it uses
-  //                         location.port (the HTTPS port the user
-  //                         actually visited, e.g. 8443).
-  //     path      = "/vite-hmr" — IMPORTANT: Vite PREPENDS base="/app/"
-  //                         to hmr.path when computing the browser-facing
-  //                         HMR URL, so the browser actually connects to
-  //                         "/app/vite-hmr".  shared-port-proxy.ts handles
-  //                         both "/vite-hmr" and "/app/vite-hmr" via an
-  //                         "ends with /vite-hmr" match.
-  //     host/protocol = undefined → @vite/client falls back to
-  //                         location.hostname / location.protocol, i.e.
-  //                         matches the page URL exactly (perfect for a
-  //                         reverse-proxy setup).
-  const hmrClientPortEnv = process.env.HMR_CLIENT_PORT;
+  // (C) server.hmr + define overrides — make browser-side HMR URL follow the
+  //                                      page URL at runtime, never hardcoded.
+  // ---------------------------------------------------------------------------
+  //
+  // Container side (Vite HMR WebSocket listener):
+  //   port = 9001  — fixed internal listener.  The in-container shared-port
+  //                  proxy routes any WebSocket Upgrade whose pathname
+  //                  contains "/vite-hmr" segment to 127.0.0.1:9001.
+  //   path = "/vite-hmr" — Vite prepends base="/app/" automatically, so the
+  //                  browser actually hits "/app/vite-hmr"; the proxy uses
+  //                  a path-segment match (not startsWith) so both forms
+  //                  route to 9001 regardless of base.
+  //
+  // Browser side (@vite/client chooses host/protocol/port from these defines):
+  //   Vite v5 DOES NOT leave host/protocol/port blank and fall back to
+  //   location.* the way earlier versions did.  Instead it bakes
+  //   __HMR_HOSTNAME__ / __HMR_PROTOCOL__ / __HMR_CLIENT_PORT__ into the
+  //   compiled @vite/client source via `define`.  Our previous attempt
+  //   relied on hmr.host/protocol/clientPort being undefined, which made
+  //   Vite's defaults hardcode hmr.port (9001) as the browser-facing port
+  //   and 'ws' as the protocol — both wrong behind an HTTPS reverse proxy
+  //   on a non-standard port like 8443.
+  //
+  //   FIX: use config.define to OVERWRITE the injected HMR constants with
+  //   raw JS expressions that evaluate AT RUNTIME in the browser against
+  //   `location`.  `define` values are TEXT substitutions (no extra
+  //   quoting), so writing `"location.hostname"` injects the literal
+  //   expression, not a JSON-stringified string.  This works for EVERY
+  //   deployment without any env vars — whether the user terminates on
+  //   :443, :8443, :80, :8080, or any other port.
+  //
+  //   __HMR_CLIENT_PORT__ expression handles standard ports too: browsers
+  //   leave location.port empty for :80 / :443, and an empty string is
+  //   falsy, so we fall back to literal '443' / '80' to prevent the
+  //   fallback `__HMR_CLIENT_PORT__ || __HMR_PORT__` from picking up
+  //   __HMR_PORT__ (the container-internal 9001 listener port).
   config.server.hmr = {
     port: 9001,
-    clientPort: hmrClientPortEnv ? Number(hmrClientPortEnv) : undefined,
     path: "/vite-hmr",
   };
+
+  // Explicit HMR_CLIENT_PORT override (rare — used ONLY when the reverse
+  // proxy exposes HMR on a DIFFERENT port than the admin HTTP page, e.g.
+  // if user still wants a separate /vite-hmr location entry).  When set,
+  // we bake that literal number into __HMR_CLIENT_PORT__.  Otherwise we
+  // bake the location.port expression.
+  const explicitClientPort = process.env.HMR_CLIENT_PORT
+    ? JSON.stringify(Number(process.env.HMR_CLIENT_PORT))
+    : "(location.port || (location.protocol === 'https:' ? '443' : '80'))";
+
+  config.define = config.define || {};
+  config.define.__HMR_HOSTNAME__ = "location.hostname";
+  config.define.__HMR_PROTOCOL__ =
+    "(location.protocol === 'https:' ? 'wss' : 'ws')";
+  config.define.__HMR_CLIENT_PORT__ = explicitClientPort;
 
   // (D) resolve.alias — belt-and-suspenders fallback.
   //     Works EVEN IF admin-bundler overwrites config.plugins after our
