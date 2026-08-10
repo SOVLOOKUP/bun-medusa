@@ -67,6 +67,10 @@ services:
       REDIS_URL: redis://redis:6379
       # Auto-run migrations on boot (idempotent — safe on every restart).
       MEDUSA_AUTO_MIGRATE: "true"
+      # Auto-create admin user on first boot (skips if already exists).
+      # Override in .env with your own credentials.
+      MEDUSA_ADMIN_EMAIL: ${MEDUSA_ADMIN_EMAIL:-admin@medusa.local}
+      MEDUSA_ADMIN_PASSWORD: ${MEDUSA_ADMIN_PASSWORD:-SuperSecret123}
     env_file:
       - .env
     # Persist user uploads / generated files across container restarts.

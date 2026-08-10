@@ -15,13 +15,16 @@
 #      `sslmode=` query parameter is already present.  MikroORM/PG defaults
 #      otherwise try an SSL handshake first and take 10 s to time out
 #      against a plain-TCP Postgres.
-#   3. Automatically run `medusa db:migrate` before `medusa start` so the
+#   3. Automatically runs `medusa db:migrate` before `medusa start` so the
 #      stack comes up with a fully migrated database on first boot — no
 #      manual `docker compose run --rm medusa bunx medusa db:migrate` needed.
 #      Migrations are idempotent (already-applied ones are skipped), so
 #      running them on every boot is safe.  Set MEDUSA_AUTO_MIGRATE=false
 #      to disable.  Only triggers when the command is `medusa start`, not
 #      for one-off commands like `medusa user` or `medusa db:migrate`.
+#   4. When MEDUSA_ADMIN_EMAIL + MEDUSA_ADMIN_PASSWORD are set, auto-creates
+#      the admin user after migration (skips if it already exists).  This
+#      enables true one-command startup — `docker compose up -d` and log in.
 #
 # The patch script is emitted into /app/node_modules (owned by user `medusa`)
 # because /app root is owned by root and not writable by the runtime user.
@@ -131,6 +134,23 @@ if [ "$AUTO_MIGRATE" = "true" ] || [ "$AUTO_MIGRATE" = "1" ]; then
       echo "[entrypoint] Migration failed — exiting. Container will restart and retry (restart: unless-stopped)."
       exit 1
     fi
+  fi
+fi
+
+# --- (4) Auto-create admin user (first boot) ------------------------------
+# When MEDUSA_ADMIN_EMAIL + MEDUSA_ADMIN_PASSWORD are set, ensure the admin
+# account exists before starting the server.  If it already exists the
+# `medusa user` command exits non-zero — we treat that as "already exists"
+# and continue.  Only triggers for `bunx medusa start`.
+ADMIN_EMAIL="${MEDUSA_ADMIN_EMAIL:-}"
+ADMIN_PASSWORD="${MEDUSA_ADMIN_PASSWORD:-}"
+if [ -n "$ADMIN_EMAIL" ] && [ -n "$ADMIN_PASSWORD" ] && \
+   [ "${1:-}" = "bunx" ] && [ "${2:-}" = "medusa" ] && [ "${3:-}" = "start" ]; then
+  echo "[entrypoint] Ensuring admin user '$ADMIN_EMAIL' exists..."
+  if bunx medusa user -e "$ADMIN_EMAIL" -p "$ADMIN_PASSWORD" 2>&1; then
+    echo "[entrypoint] Admin user created."
+  else
+    echo "[entrypoint] Admin user already exists — skipping."
   fi
 fi
 

@@ -36,6 +36,10 @@ services:
       REDIS_URL: redis://:[REDACTED-REDIS-PASSWORD]@${REDIS_HOST:-redis}:6379
       # 启动前自动跑数据库迁移(幂等,已执行的会跳过)
       MEDUSA_AUTO_MIGRATE: "true"
+      # 首次启动自动创建管理员账号(已存在则跳过)
+      # 请在 .env 中覆盖为自己的邮箱和密码
+      MEDUSA_ADMIN_EMAIL: ${MEDUSA_ADMIN_EMAIL:-admin@medusa.local}
+      MEDUSA_ADMIN_PASSWORD: ${MEDUSA_ADMIN_PASSWORD:-SuperSecret123}
     env_file:
       - .env
     volumes:
