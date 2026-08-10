@@ -25,6 +25,23 @@ WORKDIR /app/medusa
 # Fix CJS/ESM conflict in medusa-config.ts (same fix as production image)
 RUN sed -i 's/module\.exports = defineConfig/export default defineConfig/' medusa-config.ts
 
+# Permit any Host header in the embedded Admin Vite dev server.
+# Medusa v2 runs the Admin UI on a Vite dev server during `medusa develop`,
+# and Vite enables host-checking by default, blocking requests whose Host
+# header is not localhost (e.g. medusa.metapoint.tech or any reverse proxy
+# hostname).  Set allowedHosts=true (allow all) + host=true (listen on all
+# interfaces) for the dev vite config via projectConfig.admin.vite.
+RUN bun -e '\
+    const fs = require("fs");\
+    let src = fs.readFileSync("medusa-config.ts", "utf-8");\
+    if (!/allowedHosts/.test(src)) {\
+    const VITE_BLOCK = `, vite: {\n      server: {\n        allowedHosts: true,\n        host: true\n      }\n    }`;\
+    src = src.replace(/(admin:\s*\{[^}]*)(\n\s*\})/m, (match, prefix, suffix) => prefix + ", vite: {\\n      server: {\\n        allowedHosts: true,\\n        host: true\\n      }\\n    }" + suffix);\
+    fs.writeFileSync("medusa-config.ts", src);\
+    }\
+    console.log("medusa-config.ts patched for allowedHosts: " + /allowedHosts/.test(fs.readFileSync("medusa-config.ts","utf-8")));\
+    '
+
 # Add migrate + create-admin scripts to package.json
 RUN bun -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json","utf-8"));p.scripts.start=p.scripts.start||"medusa start";p.scripts.migrate="medusa db:migrate";p.scripts["create-admin"]="medusa user -e $MEDUSA_ADMIN_EMAIL -p $MEDUSA_ADMIN_PASSWORD";fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'
 
