@@ -26,6 +26,9 @@ RUN cp -a /app/medusa /app/medusa-seed
 
 WORKDIR /app/medusa
 
+# Use npmmirror to avoid 429 rate-limiting from npmjs.org
+ENV BUN_CONFIG_REGISTRY=https://registry.npmmirror.com
+
 # Install ALL dependencies (including devDependencies) — dev mode needs
 # TypeScript, the Vite admin dev server, etc.
 RUN bun install

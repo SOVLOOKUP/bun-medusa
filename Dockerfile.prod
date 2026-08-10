@@ -21,6 +21,9 @@ RUN git clone --depth 1 "$STARTER_REPO" /app/medusa && \
 
 WORKDIR /app/medusa
 
+# Use npmmirror to avoid 429 rate-limiting from npmjs.org
+ENV BUN_CONFIG_REGISTRY=https://registry.npmmirror.com
+
 # Install ALL dependencies (Medusa v2 runs directly without a build step)
 RUN bun install
 
