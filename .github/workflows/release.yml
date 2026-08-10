@@ -319,7 +319,7 @@ jobs:
             if curl -sf http://localhost:9000/health > /dev/null 2>&1; then
               echo "Medusa dev server is healthy!"
               curl -s http://localhost:9000/health
-              exit 0
+              break
             fi
             if ! docker ps | grep -q medusa-dev-test; then
               echo "Container exited early. Logs:"
@@ -328,12 +328,32 @@ jobs:
             fi
             echo "  attempt $i/96 - waiting..."
             sleep 5
+            if [ "$i" -eq 96 ]; then
+              echo "Medusa dev server did not become healthy within 8 minutes."
+              echo "=== Container logs ==="
+              docker logs medusa-dev-test 2>&1 | tail -80
+              exit 1
+            fi
           done
 
-          echo "Medusa dev server did not become healthy within 8 minutes."
-          echo "=== Container logs ==="
-          docker logs medusa-dev-test 2>&1 | tail -80
-          exit 1
+          # Verify Vite admin dev server accepts custom Host headers
+          # (regression check for "Blocked request" without allowedHosts).
+          echo "Checking admin Vite host validation..."
+          ADMIN_RESP=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Host: medusa.metapoint.tech" \
+            http://localhost:9000/app/ 2>&1 || true)
+          ADMIN_BODY=$(curl -s -H "Host: medusa.metapoint.tech" \
+            http://localhost:9000/app/ 2>&1 || true)
+          echo "Admin /app/ with custom Host → HTTP $ADMIN_RESP"
+          if echo "$ADMIN_BODY" | grep -qi "Blocked request\|is not allowed"; then
+            echo "::error::Admin Vite dev server still blocks custom Host headers"
+            echo "Response body:"
+            echo "$ADMIN_BODY" | head -20
+            echo "=== Container logs ==="
+            docker logs medusa-dev-test 2>&1 | tail -40
+            exit 1
+          fi
+          echo "Admin Vite accepts custom Host headers — allowedHosts patch verified."
 
       - name: Show container logs on failure
         if: failure()

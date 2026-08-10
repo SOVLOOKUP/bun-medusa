@@ -44,16 +44,13 @@ RUN sed -i 's/module\.exports = defineConfig/export default defineConfig/' medus
 
 # Permit any Host header in the embedded Admin Vite dev server.
 # Vite enables host-checking by default, blocking non-localhost Host names
-# (e.g. custom reverse proxy domains).  allowedHosts=true allows any host.
-RUN bun -e '\
-const fs = require("fs");\
-let src = fs.readFileSync("medusa-config.ts", "utf-8");\
-if (!/allowedHosts/.test(src)) {\
-  src = src.replace(/(admin:\s*\{[^}]*)(\n\s*\})/m, (match, prefix, suffix) => prefix + ", vite: {\\n      server: {\\n        allowedHosts: true,\\n        host: true\\n      }\\n    }" + suffix);\
-  fs.writeFileSync("medusa-config.ts", src);\
-}\
-console.log("medusa-config.ts patched for allowedHosts: " + /allowedHosts/.test(fs.readFileSync("medusa-config.ts","utf-8")));\
-'
+# (e.g. custom reverse proxy domains).  Inject allowedHosts=true after
+# `admin: {` in medusa-config.ts via simple sed (idempotent).
+RUN if ! grep -q 'allowedHosts' medusa-config.ts; then \
+      sed -i 's/admin: {/admin: { vite: { server: { allowedHosts: true, host: true } },/' medusa-config.ts; \
+    fi && \
+    grep -q 'allowedHosts' medusa-config.ts && \
+    echo "medusa-config.ts patched for allowedHosts"
 
 # Add migrate + create-admin scripts to package.json using bun for proper
 # JSON parsing (sed-based patching is fragile and can corrupt the file).
