@@ -6,8 +6,10 @@ APP_DIR="/app/medusa"
 cd "$APP_DIR"
 
 # --- (1) Run database migrations -----------------------------------------
+# Use npx (Node.js) for Medusa CLI commands — Bun has CJS/ESM parsing issues
+# with some Medusa internal modules
 echo "[medusa] Running database migrations ..."
-bunx medusa db:migrate 2>&1 || {
+npx medusa db:migrate 2>&1 || {
   echo "[medusa] Migration failed, will retry on next start or during first run."
 }
 echo "[medusa] Database migrations complete."
@@ -17,13 +19,13 @@ ADMIN_EMAIL="${MEDUSA_ADMIN_EMAIL:-}"
 ADMIN_PASSWORD="${MEDUSA_ADMIN_PASSWORD:-}"
 if [ -n "$ADMIN_EMAIL" ] && [ -n "$ADMIN_PASSWORD" ]; then
   echo "[medusa] Ensuring admin user '$ADMIN_EMAIL' exists ..."
-  if bunx medusa user -e "$ADMIN_EMAIL" -p "$ADMIN_PASSWORD" 2>&1; then
+  if npx medusa user -e "$ADMIN_EMAIL" -p "$ADMIN_PASSWORD" 2>&1; then
     echo "[medusa] Admin user created."
   else
     echo "[medusa] Admin user already exists — skipping."
   fi
 fi
 
-# --- (3) Start Medusa server ---------------------------------------------
-echo "[medusa] Starting production server: $*"
+# --- (3) Start Medusa server (Bun runtime) -------------------------------
+echo "[medusa] Starting production server with Bun: $*"
 exec "$@"

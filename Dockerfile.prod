@@ -29,13 +29,22 @@ RUN bun install
 
 # Stub out @cspotcode/source-map-support — it conflicts with Bun's native
 # stack trace handling (causes "column must be >= 0" errors)
-RUN echo 'exports.install = () => {}; exports.uninstall = () => {};' > \
-    node_modules/@cspotcode/source-map-support/source-map-support.js && \
-    echo 'module.exports = require("./source-map-support");' > \
-    node_modules/@cspotcode/source-map-support/index.js
+# Use ESM syntax to avoid triggering Bun's CJS detection
+RUN echo 'export function install() {}; export function uninstall() {};' > \
+    node_modules/@cspotcode/source-map-support/source-map-support.mjs && \
+    echo '{"type":"module","main":"./source-map-support.mjs","exports":{"import":"./source-map-support.mjs","require":"./source-map-support.cjs"}}' > \
+    node_modules/@cspotcode/source-map-support/package.json && \
+    echo 'module.exports = { install: () => {}, uninstall: () => {} };' > \
+    node_modules/@cspotcode/source-map-support/source-map-support.cjs
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────
 FROM oven/bun:debian AS runner
+
+# Install Node.js as fallback for Medusa CLI commands that have CJS/ESM
+# mixing issues incompatible with Bun's parser
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends nodejs && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/medusa
 
@@ -50,4 +59,4 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 EXPOSE 9000
 
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["bunx", "medusa", "start"]
+CMD ["bun", "run", "start"]
