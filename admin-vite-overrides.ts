@@ -35,8 +35,36 @@ const adminVite = (config: any): any => {
     "/app/medusa/src",
   ];
 
-  // (C)
-  config.server.hmr = { port: 9001, clientPort: "", path: "/vite-hmr" };
+  // (C) server.hmr
+  //     port      = 9001 — container-internal port the Vite HMR WebSocket
+  //                         server listens on. NEVER random because the
+  //                         shared-port proxy routes /vite-hmr(*) → 9001.
+  //     clientPort          — the PORT used by the BROWSER to connect.
+  //                         Defaults to `hmr.port` if unset/falsy.  We
+  //                         cannot hardcode 8443 because the reverse proxy
+  //                         external port differs per deployment, so we
+  //                         let the user override via HMR_CLIENT_PORT env
+  //                         var.  If the env var is NOT set, we leave
+  //                         clientPort undefined which tells @vite/client
+  //                         to "follow the page URL" — it uses
+  //                         location.port (the HTTPS port the user
+  //                         actually visited, e.g. 8443).
+  //     path      = "/vite-hmr" — IMPORTANT: Vite PREPENDS base="/app/"
+  //                         to hmr.path when computing the browser-facing
+  //                         HMR URL, so the browser actually connects to
+  //                         "/app/vite-hmr".  shared-port-proxy.ts handles
+  //                         both "/vite-hmr" and "/app/vite-hmr" via an
+  //                         "ends with /vite-hmr" match.
+  //     host/protocol = undefined → @vite/client falls back to
+  //                         location.hostname / location.protocol, i.e.
+  //                         matches the page URL exactly (perfect for a
+  //                         reverse-proxy setup).
+  const hmrClientPortEnv = process.env.HMR_CLIENT_PORT;
+  config.server.hmr = {
+    port: 9001,
+    clientPort: hmrClientPortEnv ? Number(hmrClientPortEnv) : undefined,
+    path: "/vite-hmr",
+  };
 
   // (D) resolve.alias — belt-and-suspenders fallback.
   //     Works EVEN IF admin-bundler overwrites config.plugins after our

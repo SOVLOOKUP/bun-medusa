@@ -9,18 +9,27 @@
 // Solution: This tiny proxy binds to container port 9000 (the only one
 // exposed) and dispatches based on request path + Upgrade header:
 //
-//   • WebSocket Upgrade + path = /vite-hmr(*) → 127.0.0.1:9001 (Vite HMR)
+//   • WebSocket Upgrade + pathname contains "vite-hmr" segment
+//                                 → 127.0.0.1:9001 (Vite HMR)
 //   • Everything else (HTTP / WebSocket on any other path)
-//                                              → 127.0.0.1:9002 (Medusa)
+//                                 → 127.0.0.1:9002 (Medusa)
+//
+// The "contains" match (instead of starts-with) is intentional because
+// Vite configures base="/app/" AND automatically prepends the base to
+// hmr.path.  So even though admin-vite-overrides.ts sets hmr.path="/vite-hmr",
+// the browser actually requests "/app/vite-hmr" (or "/<anything>/vite-hmr"
+// if base ever changes).  Matching on "ends with /vite-hmr plus query/hash"
+// catches every base the user configures.
 //
 // The user only needs one docker port mapping (HOST:9810→9000) and one
 // reverse-proxy location block that also passes WebSocket Upgrade
-// headers for the /app/ path (and optionally /vite-hmr — but that path
-// is also routed through 9000 so a single catch-all works too).
+// headers (single catch-all works for both admin HTTP AND HMR WS).
 
 const MAIN_PORT = 9002;
 const HMR_PORT = 9001;
-const HMR_PATH_PREFIX = "/vite-hmr";
+// Match either `/vite-hmr` exactly, or any path that ends with `/vite-hmr`
+// (with optional query string).  Handles Vite prepending base="/app/" to it.
+const HMR_PATH_SEGMENT = "/vite-hmr";
 const LISTEN_PORT = 9000;
 const UPSTREAM_HOST = "127.0.0.1";
 
@@ -33,13 +42,18 @@ interface WSContext {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const pairs = new WeakMap<any, WebSocket>();
 
+function isHmrPath(pathname: string): boolean {
+  return (
+    pathname.endsWith(HMR_PATH_SEGMENT) ||
+    pathname.includes(HMR_PATH_SEGMENT + "?") ||
+    pathname.includes(HMR_PATH_SEGMENT + "/")
+  );
+}
+
 function pickUpstreamPort(req: Request, url: URL): number {
-  const isHmr =
-    url.pathname === HMR_PATH_PREFIX ||
-    url.pathname.startsWith(HMR_PATH_PREFIX + "/");
   const isUpgrade =
     (req.headers.get("upgrade") || "").toLowerCase() === "websocket";
-  return isHmr && isUpgrade ? HMR_PORT : MAIN_PORT;
+  return isHmrPath(url.pathname) && isUpgrade ? HMR_PORT : MAIN_PORT;
 }
 
 const server = Bun.serve<WSContext>({
@@ -56,7 +70,8 @@ const server = Bun.serve<WSContext>({
       const scheme = port === HMR_PORT ? "ws" : "ws";
       const upstreamWsUrl = `${scheme}://${UPSTREAM_HOST}:${port}${url.pathname}${url.search}`;
       const ok = svr.upgrade(req, { upstreamWsUrl } as WSContext);
-      if (!ok) return new Response("Bad Request (upgrade rejected)", { status: 400 });
+      if (!ok)
+        return new Response("Bad Request (upgrade rejected)", { status: 400 });
       // Bun replaces this response with the 101 Switching Protocols frame;
       // the status code here is not actually sent.
       return new Response(null, { status: 101 });
@@ -76,7 +91,7 @@ const server = Bun.serve<WSContext>({
       const msg = err instanceof Error ? err.message : String(err);
       return new Response(
         `[bun-medusa proxy] Upstream port ${port} unreachable: ${msg}\n`,
-        { status: 502 }
+        { status: 502 },
       );
     }
   },
@@ -85,7 +100,9 @@ const server = Bun.serve<WSContext>({
     open(ws) {
       const ctx = ws.data as WSContext;
       try {
-        const upstream = new WebSocket(ctx.upstreamWsUrl) as unknown as WebSocket;
+        const upstream = new WebSocket(
+          ctx.upstreamWsUrl,
+        ) as unknown as WebSocket;
 
         // Upstream → client
         upstream.addEventListener("message", (e: MessageEvent) => {
@@ -97,17 +114,29 @@ const server = Bun.serve<WSContext>({
           }
         });
         upstream.addEventListener("close", () => {
-          try { (ws as unknown as { close: () => void }).close(); } catch { /* noop */ }
+          try {
+            (ws as unknown as { close: () => void }).close();
+          } catch {
+            /* noop */
+          }
         });
         upstream.addEventListener("error", () => {
-          try { (ws as unknown as { close: () => void }).close(); } catch { /* noop */ }
+          try {
+            (ws as unknown as { close: () => void }).close();
+          } catch {
+            /* noop */
+          }
         });
 
         pairs.set(ws, upstream);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[proxy] HMR upstream connect failed: ${msg}`);
-        try { (ws as unknown as { close: () => void }).close(); } catch { /* noop */ }
+        try {
+          (ws as unknown as { close: () => void }).close();
+        } catch {
+          /* noop */
+        }
       }
     },
 
@@ -115,7 +144,11 @@ const server = Bun.serve<WSContext>({
       const upstream = pairs.get(ws);
       if (!upstream) return;
       if (upstream.readyState !== WebSocket.OPEN) return;
-      try { upstream.send(message as string | ArrayBufferLike | Blob | ArrayBufferView); } catch {
+      try {
+        upstream.send(
+          message as string | ArrayBufferLike | Blob | ArrayBufferView,
+        );
+      } catch {
         /* upstream closed mid-send */
       }
     },
@@ -123,7 +156,11 @@ const server = Bun.serve<WSContext>({
     close(ws) {
       const upstream = pairs.get(ws);
       if (upstream) {
-        try { upstream.close(); } catch { /* noop */ }
+        try {
+          upstream.close();
+        } catch {
+          /* noop */
+        }
         pairs.delete(ws);
       }
     },
