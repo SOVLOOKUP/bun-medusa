@@ -1,13 +1,12 @@
 # Development environment for 1Panel — uses external postgres + redis.
 #
-# Same source-mount + hot-reload workflow as docker-compose.dev.yml, but
-# reuses the PostgreSQL and Redis/Valkey instances already managed by
-# 1Panel (joined to the external 1panel-network).
+# Pulls the pre-built dev image from GHCR. Source code is bind-mounted
+# for hot-reload editing.
 #
 # Usage:
 #   1. cp .env.example .env  &&  fill in DB/Redis host + passwords + secrets
-#   2. docker compose -f docker-compose.dev.1panel.yml up -d --build
-#   3. open http://<server-ip>:5173/app  (admin, hot-reload)
+#   2. docker compose -f docker-compose.1panel.yml up -d
+#   3. open http://<server-ip>:9000/app  (admin, hot-reload)
 #
 # Prerequisites:
 #   - 1Panel has postgres + redis on 1panel-network
@@ -16,9 +15,7 @@
 
 services:
   medusa:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/sovlookup/bun-medusa:dev
     container_name: medusa_dev_backend
     restart: unless-stopped
     networks:
