@@ -1,23 +1,20 @@
-# 1Panel 环境定制版 docker-compose —— 一键启动,自动迁移。
+# 1Panel 环境定制版 docker-compose —— 一键启动,自动迁移,自动建管理员。
 #
 # 复用 1Panel 已部署的 PostgreSQL 和 Redis(带密码认证),仅启动 medusa 容器,
 # 并加入 external 的 1panel-network。
 #
+# 所有密码 / 密钥都从 .env 读取,不硬编码在本文件中。
+#
 # 使用方式(仅需两步):
-#   1. cp .env.example .env  并填入 JWT_SECRET / COOKIE_SECRET / AUTH_MFA_ENCRYPTION_KEY / CORS
+#   1. cp .env.example .env  并填入所有必填项(数据库密码、Redis 密码、JWT 密钥等)
 #   2. docker compose -f docker-compose.1panel.yml up -d
 #
-# 迁移会自动执行(entrypoint 检测到 `medusa start` 时先跑 `medusa db:migrate`,
-# 已执行的迁移会跳过,安全幂等)。首次启动后创建管理员:
-#   docker compose -f docker-compose.1panel.yml run --rm medusa \
-#     bunx medusa user -e admin@example.com -p YourPassword123
-#
-# 然后访问 http://<host>:9000/app 登录后台。
+# 迁移 + 管理员账号创建全部自动完成,直接访问 http://<host>:9000/app 登录。
 #
 # 前提:
-#   - 1Panel 已部署 PostgreSQL 和 Redis/Valkey,且这两个容器都已加入 1panel-network
+#   - 1Panel 已部署 PostgreSQL 和 Redis/Valkey,且都加入了 1panel-network
 #   - PostgreSQL 里已创建数据库 medusa 并授权用户 medusa
-#   - 下方 POSTGRES_HOST / REDIS_HOST 默认值为 postgres / redis,如不一致请在 .env 覆盖
+#   - Docker 网络 1panel-network 存在
 
 services:
   medusa:
@@ -30,14 +27,13 @@ services:
       - "9000:9000"
     environment:
       NODE_ENV: production
-      # PostgreSQL: 数据库 medusa / 用户 medusa / 密码 [REDACTED-DB-PASSWORD]
-      DATABASE_URL: postgres://medusa:[REDACTED-DB-PASSWORD]@${POSTGRES_HOST:-postgres}:5432/medusa
-      # Redis/Valkey 密码 [REDACTED-REDIS-PASSWORD]
-      REDIS_URL: redis://:[REDACTED-REDIS-PASSWORD]@${REDIS_HOST:-redis}:6379
+      # PostgreSQL: 从 .env 读取 POSTGRES_PASSWORD / POSTGRES_HOST / POSTGRES_DB / POSTGRES_USER
+      DATABASE_URL: postgres://${POSTGRES_USER:-medusa}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:5432/${POSTGRES_DB:-medusa}
+      # Redis/Valkey: 从 .env 读取 REDIS_PASSWORD / REDIS_HOST
+      REDIS_URL: redis://:${REDIS_PASSWORD}@${REDIS_HOST:-redis}:6379
       # 启动前自动跑数据库迁移(幂等,已执行的会跳过)
       MEDUSA_AUTO_MIGRATE: "true"
       # 首次启动自动创建管理员账号(已存在则跳过)
-      # 请在 .env 中覆盖为自己的邮箱和密码
       MEDUSA_ADMIN_EMAIL: ${MEDUSA_ADMIN_EMAIL:-admin@medusa.local}
       MEDUSA_ADMIN_PASSWORD: ${MEDUSA_ADMIN_PASSWORD:-SuperSecret123}
     env_file:
