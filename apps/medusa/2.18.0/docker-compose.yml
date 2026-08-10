@@ -1,0 +1,28 @@
+services:
+  medusa:
+    image: ghcr.io/REPLACE_ME/bun-medusa:2.18.0
+    container_name: ${CONTAINER_NAME}
+    restart: unless-stopped
+    networks:
+      - 1panel-network
+    ports:
+      - ${PANEL_APP_PORT_HTTP}:9000
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://${PANEL_DB_USER}:${PANEL_DB_USER_PASSWORD}@${PANEL_DB_HOST}:5432/${PANEL_DB_NAME}?sslmode=disable
+      REDIS_URL: redis://:${REDIS_PASSWORD}@${REDIS_HOST}:6379
+      JWT_SECRET: ${JWT_SECRET}
+      COOKIE_SECRET: ${COOKIE_SECRET}
+      STORE_CORS: ${PUBLIC_URL}
+      ADMIN_CORS: ${PUBLIC_URL},http://localhost:9000
+      AUTH_CORS: ${PUBLIC_URL},http://localhost:9000
+      MEDUSA_ADMIN_EMAIL: ${MEDUSA_ADMIN_EMAIL}
+      MEDUSA_ADMIN_PASSWORD: ${MEDUSA_ADMIN_PASSWORD}
+    volumes:
+      - ./data:/app/medusa/.medusa
+    labels:
+      createdBy: "Apps"
+
+networks:
+  1panel-network:
+    external: true

@@ -3,5 +3,7 @@
 .gitignore
 .dockerignore
 Dockerfile
+docker-entrypoint.sh
 *.md
 node_modules
+apps/

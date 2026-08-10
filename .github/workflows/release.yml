@@ -1,0 +1,171 @@
+name: Release
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+
+env:
+  APP_NAME: medusa
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+  PLATFORMS: linux/amd64,linux/arm64
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get release version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=v$(date +%Y%m%d)" >> $GITHUB_OUTPUT
+          fi
+          # Strip 'v' prefix for MEDUSA_VERSION build arg
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION_NO_V="${VERSION#v}"
+          echo "version_no_v=${VERSION_NO_V}" >> $GITHUB_OUTPUT
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.prod
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            MEDUSA_VERSION=${{ steps.version.outputs.version_no_v }}
+
+  build-package:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get release version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=v$(date +%Y%m%d)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update image reference in docker-compose.yml
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          VERSION_NO_V="${VERSION#v}"
+          IMAGE_REF="ghcr.io/${{ github.repository }}:${VERSION}"
+
+          echo "Updating image reference to: ${IMAGE_REF}"
+          sed -i "s|ghcr.io/REPLACE_ME/bun-medusa:2.18.0|${IMAGE_REF}|g" apps/${APP_NAME}/${VERSION_NO_V}/docker-compose.yml
+          cat apps/${APP_NAME}/${VERSION_NO_V}/docker-compose.yml
+
+      - name: Validate app structure
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          VERSION_DIR="${VERSION#v}"
+
+          if [ ! -d "apps/${APP_NAME}" ]; then
+            echo "::error::App directory apps/${APP_NAME} not found"
+            exit 1
+          fi
+
+          if [ ! -f "apps/${APP_NAME}/data.yml" ]; then
+            echo "::error::App metadata data.yml not found"
+            exit 1
+          fi
+
+          if [ ! -f "apps/${APP_NAME}/${VERSION_DIR}/data.yml" ]; then
+            echo "::error::Version data.yml not found for ${VERSION_DIR}"
+            exit 1
+          fi
+
+          if [ ! -f "apps/${APP_NAME}/${VERSION_DIR}/docker-compose.yml" ]; then
+            echo "::error::docker-compose.yml not found for ${VERSION_DIR}"
+            exit 1
+          fi
+
+          echo "App structure validated successfully for version ${VERSION_DIR}"
+
+      - name: Package as tar.gz
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          VERSION_DIR="${VERSION#v}"
+          PACKAGE_NAME="${APP_NAME}-${VERSION_DIR}-1panel.tar.gz"
+
+          cd apps
+          tar czf ../${PACKAGE_NAME} ${APP_NAME}/
+          cd ..
+
+          echo "Created ${PACKAGE_NAME}"
+          ls -lh ${PACKAGE_NAME}
+
+      - name: Package as zip
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          VERSION_DIR="${VERSION#v}"
+          PACKAGE_NAME="${APP_NAME}-${VERSION_DIR}-1panel.zip"
+
+          cd apps
+          zip -r ../${PACKAGE_NAME} ${APP_NAME}/
+          cd ..
+
+          echo "Created ${PACKAGE_NAME}"
+          ls -lh ${PACKAGE_NAME}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: 1panel-app-${{ steps.version.outputs.version }}
+          path: |
+            *.tar.gz
+            *.zip
+          retention-days: 30
+
+      - name: Attach to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.tar.gz
+            *.zip

@@ -1,0 +1,57 @@
+# Production image — multi-stage build for Medusa v2 + Bun.
+#
+# Build:  docker build -f Dockerfile.prod -t ghcr.io/<owner>/bun-medusa:latest .
+# Run:    docker run -p 9000:9000 -e DATABASE_URL=... -e REDIS_URL=... ghcr.io/<owner>/bun-medusa:latest
+
+# ── Stage 1: Build ──────────────────────────────────────────────────
+FROM oven/bun:1.4-debian AS builder
+
+# Replace Debian mirrors for faster builds in China
+RUN sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' \
+    /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' \
+    /etc/apt/sources.list 2>/dev/null || true
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Clone the official Medusa v2 starter (default branch)
+ARG MEDUSA_VERSION=2.18.0
+ARG STARTER_REPO=https://github.com/medusajs/medusa-starter-default.git
+RUN git clone --depth 1 "$STARTER_REPO" /app/medusa && \
+    rm -rf /app/medusa/.git
+
+# Use npm mirror to avoid rate-limiting
+ENV BUN_CONFIG_REGISTRY=https://registry.npmmirror.com
+
+WORKDIR /app/medusa
+
+# Install ALL dependencies (Medusa v2 runs directly without a build step)
+RUN bun install
+
+# ── Stage 2: Runtime ─────────────────────────────────────────────────
+FROM oven/bun:1.4-debian AS runner
+
+# Replace Debian mirrors for faster builds in China
+RUN sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' \
+    /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' \
+    /etc/apt/sources.list 2>/dev/null || true
+
+WORKDIR /app/medusa
+
+# Copy built artifacts and source from builder
+COPY --from=builder /app/medusa .
+
+# Copy production entrypoint
+COPY docker-entrypoint-prod.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# 9000 = Medusa backend API + Admin dashboard
+EXPOSE 9000
+
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["bunx", "medusa", "start"]

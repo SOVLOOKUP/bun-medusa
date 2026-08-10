@@ -1,0 +1,32 @@
+name: Medusa
+tags:
+  - 建站
+title: 开源电商平台
+description: 开源电商平台
+additionalProperties:
+  key: medusa
+  name: Medusa
+  tags:
+    - Website
+  shortDescZh: 基于 Bun 的开源电商后端
+  shortDescEn: Open-source commerce backend powered by Bun
+  description:
+    en: Open-source, headless commerce backend for modern e-commerce
+    zh: 基于 Bun 的开源电商后端，为现代电子商务提供无头商业解决方案
+    zh-Hant: 基於 Bun 的開源電商後端
+    ja: BunベースのオープンソースEコマースバックエンド
+    ko: Bun 기반 오픈소스 전자상거래 백엔드
+    ms: Backend e-dagang sumber terbuka berasaskan Bun
+    pt-br: Backend de comércio eletrônico de código aberto baseado em Bun
+    ru: Открытая backend-система электронной коммерции на базе Bun
+    tr: Bun tabanlı açık kaynaklı e-ticaret arka ucu
+  type: website
+  crossVersionUpdate: true
+  limit: 0
+  recommend: 50
+  website: https://medusajs.com/
+  github: https://github.com/medusajs/medusa
+  document: https://docs.medusajs.com/
+  architectures:
+    - amd64
+    - arm64
