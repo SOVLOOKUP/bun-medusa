@@ -126,7 +126,9 @@ jobs:
 
       - name: Run Medusa container
         run: |
-          IMAGE="ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}"
+          REPO_LC="${{ github.repository }}"
+          REPO_LC="${REPO_LC,,}"
+          IMAGE="ghcr.io/${REPO_LC}:${{ steps.version.outputs.version }}"
           echo "Pulling and running $IMAGE ..."
           docker run -d --name medusa-test \
             -p 9000:9000 \
@@ -195,7 +197,9 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           VERSION_NO_V="${VERSION#v}"
-          IMAGE_REF="ghcr.io/${{ github.repository }}:${VERSION}"
+          REPO_LC="${{ github.repository }}"
+          REPO_LC="${REPO_LC,,}"
+          IMAGE_REF="ghcr.io/${REPO_LC}:${VERSION}"
 
           echo "Updating image reference to: ${IMAGE_REF}"
           sed -i "s|ghcr.io/REPLACE_ME/bun-medusa:2.18.0|${IMAGE_REF}|g" apps/${APP_NAME}/2.18.0/docker-compose.yml
