@@ -157,7 +157,103 @@ if [ -f "$_CFG" ]; then
 fi
 unset _CFG
 
-# --- (5) Normalise DATABASE_URL -------------------------------------------
+# --- (4c) Sanitize .env (idempotent, every boot) ---------------------------
+# Older versions of this entrypoint had two bugs that could corrupt .env:
+#   (a) The sed `s|...|DATABASE_URL=$DATABASE_URL|` replacement used the raw
+#       URL which contains `&`.  In sed, `&` is a back-reference to the
+#       entire match, so every rewrite *duplicated* the old value inside the
+#       new value — repeating sslmode=disable&connect_timeout=30 many times.
+#   (b) The generated .env lines sometimes had no trailing newline, causing
+#       subsequent writes to glue to the previous line.
+#
+# Fix strategy: rewrite the file, normalising key=value lines:
+#   • Ensure every KEY=VALUE pair sits on its own line (split runs of
+#     "KEY=...KEY=..." produced by bug (a)+(b)).
+#   • Keep the FIRST occurrence of each KEY (user edits win over
+#     duplicates spawned by the sed bug).
+#   • Preserve blank lines, comments, and the header block.
+#   • Always add a final trailing newline.
+if [ -f "$APP_DIR/.env" ]; then
+  _TMP_ENV="${APP_DIR}/.env.sanitized.$$"
+  _seen_keys=""
+
+  # Read entire .env into REPLY; then split on KEY= boundaries to recover
+  # from bug (a)+(b) concatenations.  Busybox-compatible (no bash arrays).
+  _raw_env=$(cat "$APP_DIR/.env" 2>/dev/null || true)
+
+  # Produce one KEY=VALUE token per line.  Strategy: turn "KEY1=v1KEY2=v2"
+  # into "KEY1=v1" LF "KEY2=v2" by inserting newlines before each
+  # /^[A-Z_][A-Z0-9_]*=/ match that is not already at BOF.
+  _tokens=$(printf '%s\n' "$_raw_env" \
+    | awk '
+        {
+          line = $0
+          # If the line has multiple KEY= runs jammed together, split them.
+          # Insert a \x01 marker before each ^[A-Z_][A-Z0-9_]*= that has a
+          # non-empty prefix.
+          while (match(line, /[A-Z_][A-Z0-9_]*=/)) {
+            pos = RSTART
+            if (pos == 1 && prev == "") {
+              # first token in a new jumble
+            } else if (pos > 1) {
+              # print everything before this KEY= as a chunk
+              print substr(line, 1, pos - 1)
+            }
+            # consume through the end of the value (up to the next KEY=
+            # start or EOL)
+            key_eq = substr(line, RSTART, RLENGTH)
+            rest = substr(line, RSTART + RLENGTH)
+            # find the next KEY= within rest (the bug produced
+            # "KEY1=...KEY2=...")
+            if (match(rest, /[A-Z_][A-Z0-9_]*=/)) {
+              val = substr(rest, 1, RSTART - 1)
+              print key_eq val
+              line = substr(rest, RSTART)
+              prev = "J"
+            } else {
+              print key_eq rest
+              line = ""
+              prev = ""
+              break
+            }
+          }
+          if (length(line) > 0) print line
+        }
+      ')
+
+  # Now de-duplicate: for each KEY=VALUE line, keep the FIRST occurrence.
+  # Preserve lines that don't look like KEY=VALUE (comments, blanks).
+  : > "$_TMP_ENV"
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    if printf '%s' "$_line" | grep -Eq '^[A-Z_][A-Z0-9_]*='; then
+      _key=$(printf '%s' "$_line" | sed 's/=.*//')
+      case " $_seen_keys " in
+        *" $_key "*) ;;          # duplicate — drop
+        *)
+          echo "$_line" >> "$_TMP_ENV"
+          _seen_keys="$_seen_keys $_key"
+          ;;
+      esac
+    else
+      echo "$_line" >> "$_TMP_ENV"
+    fi
+  done <<EOF
+$_tokens
+EOF
+
+  # Guarantee final newline (busybox sh "read" loop can leave it off for
+  # unterminated source lines).
+  [ -s "$_TMP_ENV" ] && [ "$(tail -c1 "$_TMP_ENV" 2>/dev/null | wc -l)" -eq 0 ] && echo "" >> "$_TMP_ENV"
+
+  mv "$_TMP_ENV" "$APP_DIR/.env"
+  unset _TMP_ENV _raw_env _tokens _key _line _seen_keys
+fi
+
+# --- (5) Normalise DATABASE_URL + write back safely ------------------------
+# Normalise the runtime DATABASE_URL (env var takes precedence, used by
+# bun run dev / medusa develop directly — but also sync to .env so tools
+# that read only .env still work).  Write-back uses AWK, not sed, so the
+# `&` inside the URL is not interpreted as a sed back-reference.
 if [ -n "${DATABASE_URL:-}" ]; then
   case "$DATABASE_URL" in
     *sslmode=*)    : ;;
@@ -165,8 +261,27 @@ if [ -n "${DATABASE_URL:-}" ]; then
     *)             DATABASE_URL="${DATABASE_URL}?sslmode=disable&connect_timeout=30" ;;
   esac
   export DATABASE_URL
-  if grep -q '^DATABASE_URL=' "$APP_DIR/.env" 2>/dev/null; then
-    sed -i "s|^DATABASE_URL=.*|DATABASE_URL=$DATABASE_URL|" "$APP_DIR/.env"
+
+  if [ -f "$APP_DIR/.env" ]; then
+    _ENV_TMP="${APP_DIR}/.env.dburl.$$"
+    # AWK: replace FIRST line that starts with DATABASE_URL= with our value;
+    # leave every other line untouched.  (The sanitizer above guarantees only
+    # one such line exists, but do the safe single-replace anyway.)
+    awk -v newval="DATABASE_URL=$DATABASE_URL" '
+      BEGIN { replaced = 0 }
+      {
+        if (!replaced && $0 ~ /^DATABASE_URL=/) {
+          print newval
+          replaced = 1
+        } else {
+          print $0
+        }
+      }
+      END { if (!replaced) print newval }
+    ' "$APP_DIR/.env" > "$_ENV_TMP" \
+      && mv "$_ENV_TMP" "$APP_DIR/.env"
+    rm -f "$_ENV_TMP"
+    unset _ENV_TMP
   fi
 fi
 
