@@ -27,6 +27,27 @@ if [ ! -f "$APP_DIR/package.json" ]; then
   echo "[dev-entrypoint] Source code seeded. You can now edit files in ./medusa-app/ on the host."
 fi
 
+# --- (1b) Top up missing starter files on stale bind-mounts ---------------
+# The starter may add new required files in newer versions (e.g.
+# src/admin/i18n/index.ts added 2025-10-27).  A volume created from an
+# older seed has package.json so step (1) never runs again, leaving the
+# new file absent and Vite's i18n virtual module unable to resolve.
+# Sync only what's missing — never overwrite existing user edits.
+_TOPUP_FILES="
+  src/admin/i18n/index.ts
+  src/admin/i18n/README.md
+"
+for _rel in $_TOPUP_FILES; do
+  _src="$SEED_DIR/$_rel"
+  _dst="$APP_DIR/$_rel"
+  if [ -f "$_src" ] && [ ! -f "$_dst" ]; then
+    echo "[dev-entrypoint] Syncing missing $_rel from seed (stale volume) ..."
+    mkdir -p "$(dirname "$_dst")"
+    cp -a "$_src" "$_dst"
+  fi
+done
+unset _rel _src _dst _TOPUP_FILES
+
 cd "$APP_DIR"
 
 # --- (2) Install dependencies if missing ----------------------------------
@@ -86,6 +107,26 @@ EOF
   echo "[dev-entrypoint] .env created."
 fi
 
+# --- (4b) Enforce http.port = 9002 in medusa-config.ts --------------------
+# The in-container shared-port proxy (shared-port-proxy.ts) owns port 9000.
+# Medusa MUST listen on 9002 to avoid EADDRINUSE.  PORT=9002 is also set at
+# exec-time below, but some codepaths read the config value directly —
+# make both agree, on EVERY boot (not just first-boot seed), so bind-mount
+# volumes created by older image versions still work after upgrade.
+if [ -f "$APP_DIR/medusa-config.ts" ]; then
+  if grep -qE 'http:[[:space:]]*\{' "$APP_DIR/medusa-config.ts"; then
+    if grep -qE '(^|[[:space:]])port:[[:space:]]*9002[,[:space:]]*$' "$APP_DIR/medusa-config.ts" 2>/dev/null; then
+      : # already correct, nothing to do
+    elif grep -qE '(^|[[:space:]])port:[[:space:]]*[0-9]+' "$APP_DIR/medusa-config.ts" 2>/dev/null; then
+      echo "[dev-entrypoint] Correcting medusa-config.ts http.port to 9002 (proxy owns port 9000) ..."
+      sed -i -E 's/((^|[[:space:]])port:[[:space:]]*)[0-9]+/\19002/' "$APP_DIR/medusa-config.ts"
+    else
+      echo "[dev-entrypoint] Injecting http.port = 9002 into medusa-config.ts (proxy owns port 9000) ..."
+      sed -i 's/http: {/http: {\n    port: 9002,/' "$APP_DIR/medusa-config.ts"
+    fi
+  fi
+fi
+
 # --- (5) Normalise DATABASE_URL -------------------------------------------
 if [ -n "${DATABASE_URL:-}" ]; then
   case "$DATABASE_URL" in
@@ -137,6 +178,25 @@ if [ -n "$ADMIN_EMAIL" ] && [ -n "$ADMIN_PASSWORD" ]; then
   fi
 fi
 
-# --- (8) Hand off to dev server -------------------------------------------
-echo "[dev-entrypoint] Starting dev server: $*"
-exec "$@"
+# --- (8) Shared-port proxy + dev server -----------------------------------
+# shared-port-proxy.ts (Bun) binds to container port 9000 and dispatches:
+#   • HTTP + non-HMR WebSocket traffic   → 127.0.0.1:9002 (Medusa)
+#   • WebSocket Upgrade for /vite-hmr(*) → 127.0.0.1:9001 (Vite HMR)
+# Result: a SINGLE docker port mapping (-p HOST:9810→9000) carries EVERYTHING,
+# so the reverse proxy only needs one location block + WebSocket Upgrade
+# passthrough — no extra HMR port mapping, no separate /vite-hmr location.
+#
+# The proxy runs in the background.  Medusa runs on PORT=9002 in the
+# foreground (still becomes PID 1 via exec).  If medusa exits the
+# container will terminate and the proxy dies with it.
+echo "[dev-entrypoint] Starting shared-port reverse proxy on 0.0.0.0:9000"
+bun /usr/local/bin/shared-port-proxy.ts &
+PROXY_PID=$!
+trap '[ -n "${PROXY_PID:-}" ] && kill $PROXY_PID 2>/dev/null || true' EXIT INT TERM HUP
+
+# Tiny grace period: let the proxy bind port 9000 BEFORE medusa comes up
+# (medusa binds 9002 anyway, so this is purely cosmetic — no race).
+sleep 0.5
+
+echo "[dev-entrypoint] Starting dev server on container-internal port 9002: PORT=9002 $*"
+PORT=9002 exec "$@"

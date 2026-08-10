@@ -340,9 +340,9 @@ jobs:
           # (regression check for "Blocked request" without allowedHosts).
           echo "Checking admin Vite host validation..."
           ADMIN_RESP=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Host: medusa.metapoint.tech" \
+            -H "Host: medusa.example.com" \
             http://localhost:9000/app/ 2>&1 || true)
-          ADMIN_BODY=$(curl -s -H "Host: medusa.metapoint.tech" \
+          ADMIN_BODY=$(curl -s -H "Host: medusa.example.com" \
             http://localhost:9000/app/ 2>&1 || true)
           echo "Admin /app/ with custom Host → HTTP $ADMIN_RESP"
           if echo "$ADMIN_BODY" | grep -qi "Blocked request\|is not allowed"; then
@@ -354,6 +354,28 @@ jobs:
             exit 1
           fi
           echo "Admin Vite accepts custom Host headers — allowedHosts patch verified."
+
+          # Verify the i18n virtual module resolves successfully (regression
+          # check for "Failed to resolve import ... Does the file exist?"
+          # which causes a blank admin page at runtime even though /app/ 200s).
+          # Vite exposes \0-prefixed virtual modules via the /@id/__x00__ prefix
+          # (URL-encode NUL).  The admin Vite middleware is mounted under /app/.
+          echo "Checking admin i18n virtual module..."
+          I18N_RESP=$(curl -s -o /tmp/i18n-out.txt -w "%{http_code}" \
+            -H "Host: medusa.example.com" \
+            http://localhost:9000/app/@id/__x00__virtual:medusa/i18n 2>&1 || true)
+          I18N_BODY=$(cat /tmp/i18n-out.txt 2>/dev/null || echo "")
+          echo "Admin i18n virtual module → HTTP $I18N_RESP"
+          if [ "$I18N_RESP" != "200" ] || ! echo "$I18N_BODY" | grep -qE "export default|resources.*i18nTranslations0"; then
+            echo "::error::Admin i18n virtual module failed to resolve (HTTP $I18N_RESP). This causes a BLANK admin page."
+            echo "Response body (first 500 chars):"
+            echo "$I18N_BODY" | head -c 500
+            echo
+            echo "=== Container logs (last 80) ==="
+            docker logs medusa-dev-test 2>&1 | tail -80
+            exit 1
+          fi
+          echo "Admin i18n virtual module resolves successfully — no blank-page regression."
 
       - name: Show container logs on failure
         if: failure()
