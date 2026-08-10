@@ -91,31 +91,101 @@ const adminVite = (config: any): any => {
     "(location.protocol === 'https:' ? 'wss' : 'ws')";
   config.define.__HMR_CLIENT_PORT__ = explicitClientPort;
 
-  // (C2) Disable Vite optimizeDeps entirely in dev mode.
-  //      Root cause of repeatedly-reported "Failed to fetch dynamically
-  //      imported module" with HTTP 404: Medusa's admin-bundler lazily
-  //      triggers optimizeDeps discovery whenever the user navigates an
-  //      admin route that imports a new page-level chunk.  Under Bun,
-  //      the esbuild prebundling step occasionally produces chunk files
-  //      whose <contentHash> suffix disagrees with the _metadata.json
-  //      hash the transform pipeline injects into parent chunks that
-  //      dynamic-import them — the browser loads
-  //        chunk-A (stale, baked with hash "X" of chunk-B)
-  //        → fetches chunk-B at hash X
-  //        → disk has chunk-B at hash Y (≠X)
-  //        → HTTP 404
-  //      Even deleting node_modules/.vite before every boot only fixes
-  //      the initial boot; navigating between admin routes re-triggers
-  //      lazy discovery and the hash mismatch can repeat.
+  // (C2) Keep CJS deps optimized, but NEVER do lazy-route triggered
+  //      on-demand re-discovery.
   //
-  //      `optimizeDeps.disabled = "dev"` tells Vite to NEVER prebundle.
-  //      The browser simply loads EVERY admin route-module as a plain
-  //      native ESM fetch directly from node_modules via @fs/ paths.
-  //      Modern browsers handle hundreds of parallel ESM requests fine;
-  //      trade a bit more first-visit request count for ZERO 404s and
-  //      zero Bun/esbuild compatibility surprises.
+  //      History: `optimizeDeps.disabled = "dev"` was tried first but
+  //      caused a HARD SyntaxError on React v18's jsx-runtime:
+  //        ".../react/jsx-runtime.js does not provide an export named 'jsx'"
+  //      because `react/jsx-runtime` is a COMMONJS module that relies on
+  //      esbuild CJS→ESM interop to expose named exports.  You CANNOT just
+  //      load it via @fs as raw ESM; it MUST be pre-bundled.
+  //
+  //      The root cause of the earlier 404 hash-mismatch bugs was NOT the
+  //      existence of optimizeDeps itself, but Bun/esbuild race conditions
+  //      on LAZY re-discovery.  Flow:
+  //        1. Vite boots → optimizeDeps scans admin-bundler's explicit
+  //           `include` list → writes react/react-dom/etc chunks +
+  //           _metadata.json → ALL hashes are stable & consistent.
+  //        2. User navigates into a route with a dynamic `import(...)`
+  //           (e.g. region-list page) → Vite's DISCOVERY pipeline adds
+  //           the new chunk KEY to _metadata.json with a new hash.
+  //        3. Under Bun, the esbuild WRITE for that new chunk races the
+  //           transform pipeline: metadata + parent chunks bake hash "X"
+  //           but esbuild actually writes hash "Y" to disk → 404 when
+  //           the browser follows the dynamic import URL with hash X.
+  //
+  //      `optimizeDeps.noDiscovery = true` tells Vite:
+  //        • STILL run optimizeDeps at boot (react CJS gets the interop
+  //          → `export const jsx` exists → SyntaxError gone).
+  //        • NEVER re-scan imports at runtime when lazy route chunks
+  //          are loaded.  Any module NOT on the boot-time `include` list
+  //          simply loads as raw native ESM via @fs URLs (that's fine
+  //          for ESM-only admin route packages — they never had CJS
+  //          interop problems to begin with).
+  //
+  //      As a belt-and-suspenders safety net, we ALSO append React
+  //      explicitly, in case admin-bundler ever drops them from their
+  //      own include list (should never happen, but cheap to add).
   config.optimizeDeps = config.optimizeDeps || {};
-  config.optimizeDeps.disabled = "dev";
+  config.optimizeDeps.noDiscovery = true;
+  const existingInclude = Array.isArray(config.optimizeDeps.include)
+    ? config.optimizeDeps.include
+    : config.optimizeDeps.include
+      ? [config.optimizeDeps.include]
+      : [];
+  // CJS packages that break if loaded raw via @fs URLs (no ESM interop).
+  // The admin-bundler already includes most of these; we re-list them
+  // explicitly so noDiscovery mode doesn't accidentally drop them.
+  const _cjsCritical = [
+    "react",
+    "react/jsx-runtime",
+    "react/jsx-dev-runtime",
+    "react-dom",
+    "react-dom/client",
+    "react-dom/server",
+    "react-router-dom",
+    "react-i18next",
+    "i18next",
+    "@tanstack/react-query",
+    "@medusajs/ui",
+    "@medusajs/admin-shared",
+    "@medusajs/dashboard",
+    "@medusajs/js-sdk",
+    "@medusajs/draft-order/admin",
+  ];
+  config.optimizeDeps.include = Array.from(
+    new Set([...existingInclude, ..._cjsCritical]),
+  );
+
+  // (C3) Diagnostic — log HMR + optimizeDeps config at boot so operators
+  //      can confirm the customised vite function is ACTUALLY loaded by
+  //      grepping `docker logs medusa | grep [admin-vite-config]`.
+  try {
+    const _banner = [
+      "[admin-vite-config] ===== admin-vite-overrides.ts ACTIVE =====",
+      `[admin-vite-config] server.allowedHosts = ${String(config.server?.allowedHosts)}`,
+      `[admin-vite-config] server.host = ${String(config.server?.host)}`,
+      `[admin-vite-config] server.fs.strict = ${String(config.server?.fs?.strict)}`,
+      `[admin-vite-config] server.fs.allow = ${JSON.stringify(config.server?.fs?.allow ?? [])}`,
+      `[admin-vite-config] server.hmr.port = ${String(config.server?.hmr?.port)}`,
+      `[admin-vite-config] server.hmr.path = ${String(config.server?.hmr?.path)}`,
+      `[admin-vite-config] define.__HMR_HOSTNAME__ = ${String(config.define?.__HMR_HOSTNAME__)}`,
+      `[admin-vite-config] define.__HMR_PROTOCOL__ = ${String(config.define?.__HMR_PROTOCOL__)}`,
+      `[admin-vite-config] define.__HMR_CLIENT_PORT__ = ${String(config.define?.__HMR_CLIENT_PORT__)}`,
+      `[admin-vite-config] optimizeDeps.noDiscovery = ${String(config.optimizeDeps.noDiscovery)}`,
+      `[admin-vite-config] optimizeDeps.include count = ${config.optimizeDeps.include.length}`,
+      `[admin-vite-config] resolve.plugins resolve-abs-fs-paths = ${(config.resolve?.plugins ?? []).some((p) => p && (p as any).name === "resolve-abs-fs-paths")}`,
+      "[admin-vite-config] ==================================================",
+    ].join("\n");
+    // Use `console` only when available — this file also gets `require()`-ed
+    // by the entrypoint's sed pipeline which runs under Bun's top-level scope.
+    if (typeof console !== "undefined" && typeof console.log === "function") {
+      console.log(_banner);
+    }
+  } catch {
+    // Diagnostic must NEVER crash the vite function; swallow everything.
+  }
 
   // (D) resolve.alias — belt-and-suspenders fallback.
   //     Works EVEN IF admin-bundler overwrites config.plugins after our

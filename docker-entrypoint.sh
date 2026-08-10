@@ -341,6 +341,33 @@ if [ -n "$ADMIN_EMAIL" ] && [ -n "$ADMIN_PASSWORD" ]; then
   fi
 fi
 
+# --- (7b) Clear Vite optimizeDeps cache on every boot --------------------
+#
+# Even though admin-vite-overrides.ts now sets `optimizeDeps.noDiscovery`
+# (which eliminates Bun/esbuild hash races triggered by lazy route
+# scans), stale cross-version hash mismatches can still occur if the
+# bind-mounted volume still has node_modules/.vite files from a prior
+# image / earlier Vite build WITH discovery enabled.
+#
+# Example: today's container had metadata hash `EKE55IKS` for
+# region-list-<prefix> but disk still had hash `3HPSTDKU` from a
+# previous optimizeDeps run → browser 404 even though noDiscovery was
+# set, because the old chunk files + metadata still existed.
+#
+# Cost: ~5–30 s extra on first admin page load (Vite re-builds the boot
+# `include` list once).  That's strictly cheaper than chasing hashes
+# later.
+_VITE_CACHE="$APP_DIR/node_modules/.vite"
+if [ -d "$_VITE_CACHE" ]; then
+  _N_FILES=$(find "$_VITE_CACHE" -type f | wc -l | tr -d ' ')
+  echo "[dev-entrypoint] Clearing stale Vite optimizeDeps cache ($_N_FILES files in $_VITE_CACHE) ..."
+  rm -rf "$_VITE_CACHE"
+  echo "[dev-entrypoint] Cache cleared.  Boot-time optimizeDeps will rebuild include-list chunks only (noDiscovery = no lazy re-scan)."
+else
+  echo "[dev-entrypoint] No prior Vite optimizeDeps cache (clean boot)."
+fi
+unset _VITE_CACHE _N_FILES
+
 # --- (8) Shared-port proxy + dev server -----------------------------------
 # shared-port-proxy.ts (Bun) binds to container port 9000 and dispatches:
 #   • HTTP + non-HMR WebSocket traffic   → 127.0.0.1:9002 (Medusa)
