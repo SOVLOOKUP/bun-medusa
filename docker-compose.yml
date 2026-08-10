@@ -1,9 +1,9 @@
 # docker-compose for the Bun-built Medusa image published to GHCR.
 #
-# Usage:
+# Usage (one command — migrations run automatically on first boot):
 #   1. cp .env.example .env  &&  fill in the required secrets
 #   2. docker compose up -d
-#   3. docker compose run --rm medusa bunx medusa db:migrate   # first-time only
+#   3. docker compose run --rm medusa bunx medusa user -e admin@example.com -p YourPassword123
 #   4. open http://localhost:9000/app
 #
 # The image ships a self-contained production build: the admin dashboard is
@@ -65,6 +65,8 @@ services:
       # automatically by the entrypoint; they do not need to be added here.
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/medusa-store
       REDIS_URL: redis://redis:6379
+      # Auto-run migrations on boot (idempotent — safe on every restart).
+      MEDUSA_AUTO_MIGRATE: "true"
     env_file:
       - .env
     # Persist user uploads / generated files across container restarts.

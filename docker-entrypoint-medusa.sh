@@ -1,6 +1,6 @@
 #!/bin/sh
 # ---------------------------------------------------------------------------
-# Three jobs:
+# Four jobs:
 #   1. Patch /app/medusa-config.js to:
 #        - inject real Redis-backed modules (cache / event_bus / workflows /
 #          locking) when REDIS_URL is provided, replacing the memory-backed
@@ -15,6 +15,13 @@
 #      `sslmode=` query parameter is already present.  MikroORM/PG defaults
 #      otherwise try an SSL handshake first and take 10 s to time out
 #      against a plain-TCP Postgres.
+#   3. Automatically run `medusa db:migrate` before `medusa start` so the
+#      stack comes up with a fully migrated database on first boot — no
+#      manual `docker compose run --rm medusa bunx medusa db:migrate` needed.
+#      Migrations are idempotent (already-applied ones are skipped), so
+#      running them on every boot is safe.  Set MEDUSA_AUTO_MIGRATE=false
+#      to disable.  Only triggers when the command is `medusa start`, not
+#      for one-off commands like `medusa user` or `medusa db:migrate`.
 #
 # The patch script is emitted into /app/node_modules (owned by user `medusa`)
 # because /app root is owned by root and not writable by the runtime user.
@@ -109,5 +116,22 @@ if (ru) {
 console.log('[entrypoint] medusa-config.js patched — ' + bits.join(' | '));
 NODEEOF
 bun "$PATCH_FILE"
+
+# --- (3) Auto-migrate before `medusa start` -------------------------------
+# Only triggers when the command is `bunx medusa start` (the normal server
+# boot).  One-off commands like `medusa user` or `medusa db:migrate` bypass
+# this so they run directly without a redundant migration pass.
+AUTO_MIGRATE="${MEDUSA_AUTO_MIGRATE:-true}"
+if [ "$AUTO_MIGRATE" = "true" ] || [ "$AUTO_MIGRATE" = "1" ]; then
+  if [ "${1:-}" = "bunx" ] && [ "${2:-}" = "medusa" ] && [ "${3:-}" = "start" ]; then
+    echo "[entrypoint] Running database migrations (idempotent)..."
+    if bunx medusa db:migrate; then
+      echo "[entrypoint] Migrations completed."
+    else
+      echo "[entrypoint] Migration failed — exiting. Container will restart and retry (restart: unless-stopped)."
+      exit 1
+    fi
+  fi
+fi
 
 exec "$@"
