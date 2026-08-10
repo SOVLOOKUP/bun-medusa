@@ -74,8 +74,104 @@ jobs:
           build-args: |
             MEDUSA_VERSION=${{ steps.version.outputs.version_no_v }}
 
-  build-package:
+  smoke-test:
     needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: medusa
+          POSTGRES_PASSWORD: medusa_password
+          POSTGRES_DB: medusa
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U medusa"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Get release version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo "version=v0.0.1-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          else
+            echo "version=v$(date +%Y%m%d)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Medusa container
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}"
+          echo "Pulling and running $IMAGE ..."
+          docker run -d --name medusa-test \
+            -p 9000:9000 \
+            -e DATABASE_URL="postgres://medusa:medusa_password@localhost:5432/medusa?sslmode=disable" \
+            -e REDIS_URL="redis://localhost:6379" \
+            -e JWT_SECRET="supersecret" \
+            -e COOKIE_SECRET="supersecret" \
+            -e MEDUSA_ADMIN_EMAIL="admin@test.com" \
+            -e MEDUSA_ADMIN_PASSWORD="supersecret123" \
+            "$IMAGE"
+
+          echo "Waiting for Medusa to start..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:9000/health > /dev/null 2>&1; then
+              echo "Medusa is healthy!"
+              curl -s http://localhost:9000/health
+              exit 0
+            fi
+            # Check if container is still running
+            if ! docker ps | grep -q medusa-test; then
+              echo "Container exited early. Logs:"
+              docker logs medusa-test
+              exit 1
+            fi
+            echo "  attempt $i/60 - waiting..."
+            sleep 5
+          done
+
+          echo "Medusa did not become healthy within 5 minutes."
+          echo "=== Container logs ==="
+          docker logs medusa-test 2>&1 | tail -50
+          exit 1
+
+      - name: Show container logs on failure
+        if: failure()
+        run: |
+          echo "=== Container logs ==="
+          docker logs medusa-test 2>&1 | tail -80
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f medusa-test || true
+
+  build-package:
+    needs: [build-and-push, smoke-test]
     runs-on: ubuntu-latest
     permissions:
       contents: write
