@@ -27,8 +27,14 @@ ENV BUN_CONFIG_REGISTRY=https://registry.npmmirror.com
 # Install ALL dependencies (Medusa v2 runs directly without a build step)
 RUN bun install
 
-# Add migrate + create-admin scripts to package.json via sed (not bun -e,
-# which could interfere with CJS/ESM module resolution)
+# Patch @cspotcode/source-map-support: disable its Error.prepareStackTrace
+# override that crashes Bun with "column must be >= 0" when MikroORM
+# decorators are processed. Only remove the assignment — keep the rest
+# of the module intact to avoid CJS/ESM cascade issues.
+RUN sed -i 's/Error\.prepareStackTrace = prepareStackTrace/Error.prepareStackTrace = void 0/g' \
+    node_modules/@cspotcode/source-map-support/source-map-support.js
+
+# Add migrate + create-admin scripts to package.json
 RUN sed -i 's/"start": "medusa start"/"start": "medusa start",\n    "migrate": "medusa db:migrate",\n    "create-admin": "medusa user"/' package.json
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────
