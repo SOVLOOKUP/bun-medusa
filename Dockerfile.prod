@@ -27,24 +27,18 @@ ENV BUN_CONFIG_REGISTRY=https://registry.npmmirror.com
 # Install ALL dependencies (Medusa v2 runs directly without a build step)
 RUN bun install
 
-# Stub out @cspotcode/source-map-support — it conflicts with Bun's native
-# stack trace handling (causes "column must be >= 0" errors)
-# Use ESM syntax to avoid triggering Bun's CJS detection
-RUN echo 'export function install() {}; export function uninstall() {};' > \
-    node_modules/@cspotcode/source-map-support/source-map-support.mjs && \
-    echo '{"type":"module","main":"./source-map-support.mjs","exports":{"import":"./source-map-support.mjs","require":"./source-map-support.cjs"}}' > \
-    node_modules/@cspotcode/source-map-support/package.json && \
-    echo 'module.exports = { install: () => {}, uninstall: () => {} };' > \
-    node_modules/@cspotcode/source-map-support/source-map-support.cjs
+# Add migrate/user scripts to package.json so we can use 'bun run' for them
+# (bun run handles CJS/ESM resolution correctly, unlike bunx)
+RUN bun -e " \
+    const p = require('./package.json'); \
+    p.scripts = p.scripts || {}; \
+    p.scripts.migrate = 'medusa db:migrate'; \
+    p.scripts['create-admin'] = 'medusa user -e \$MEDUSA_ADMIN_EMAIL -p \$MEDUSA_ADMIN_PASSWORD'; \
+    require('fs').writeFileSync('./package.json', JSON.stringify(p, null, 2)); \
+    "
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────
 FROM oven/bun:debian AS runner
-
-# Install Node.js + npm for Medusa CLI commands (Bun has CJS/ESM parsing
-# issues with Medusa's config loader)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends nodejs npm && \
-    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/medusa
 
