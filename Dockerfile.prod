@@ -36,6 +36,12 @@ RUN sed -i 's/throw new Error(COL_GTR_EQ_ZERO)/return {source:null,line:null,col
     sed -i 's/throw new Error(LINE_GTR_ZERO)/return {source:null,line:null,column:null,name:null}/g' \
     node_modules/@jridgewell/trace-mapping/dist/trace-mapping.umd.js
 
+# Fix CJS/ESM conflict: medusa-config.ts uses both 'import' (ESM) and
+# 'module.exports' (CJS). The 'module.exports' reference triggers Bun's
+# CJS detection, making the 'import' statement invalid. Replace with
+# 'export default' for pure ESM.
+RUN sed -i 's/module\.exports = defineConfig/export default defineConfig/' medusa-config.ts
+
 # Add migrate + create-admin scripts to package.json
 RUN sed -i 's/"start": "medusa start"/"start": "medusa start",\n    "migrate": "medusa db:migrate",\n    "create-admin": "medusa user"/' package.json
 
