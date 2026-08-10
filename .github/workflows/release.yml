@@ -13,7 +13,66 @@ env:
   PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
+  # ── Resolve versions from Dockerfile.prod ─────────────────────────
+  get-versions:
+    runs-on: ubuntu-latest
+    outputs:
+      medusa_version: ${{ steps.versions.outputs.medusa_version }}
+      docker_tag: ${{ steps.versions.outputs.docker_tag }}
+      release_tag: ${{ steps.versions.outputs.release_tag }}
+      prerelease: ${{ steps.versions.outputs.prerelease }}
+      channel: ${{ steps.versions.outputs.channel }}
+      short_sha: ${{ steps.versions.outputs.short_sha }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve versions
+        id: versions
+        run: |
+          # Read MEDUSA_VERSION build arg from Dockerfile.prod (single source of truth)
+          MEDUSA_VERSION=$(grep -m1 '^ARG MEDUSA_VERSION=' Dockerfile.prod \
+            | cut -d'=' -f2 \
+            | tr -d '[:space:]' \
+            | tr -d '"')
+          echo "medusa_version=${MEDUSA_VERSION}" >> $GITHUB_OUTPUT
+          echo "Parsed MEDUSA_VERSION=${MEDUSA_VERSION} from Dockerfile.prod"
+
+          SHORT_SHA="${GITHUB_SHA::7}"
+          echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+
+          if [ "${{ github.event_name }}" = "release" ]; then
+            # Release event: use the tag the user created
+            RELEASE_TAG="${{ github.event.release.tag_name }}"
+            # Strip optional 'v' prefix for docker tag
+            DOCKER_TAG="${RELEASE_TAG#v}"
+            PRERELEASE="false"
+            CHANNEL="stable"
+          else
+            # Push or dispatch: build a tagged edge pre-release aligned
+            # with the Medusa version (e.g. 2.18.0-a1b2c3d)
+            RELEASE_TAG="v${MEDUSA_VERSION}-edge"
+            DOCKER_TAG="${MEDUSA_VERSION}-${SHORT_SHA}"
+            PRERELEASE="true"
+            CHANNEL="edge"
+          fi
+
+          echo "docker_tag=${DOCKER_TAG}" >> $GITHUB_OUTPUT
+          echo "release_tag=${RELEASE_TAG}" >> $GITHUB_OUTPUT
+          echo "prerelease=${PRERELEASE}" >> $GITHUB_OUTPUT
+          echo "channel=${CHANNEL}" >> $GITHUB_OUTPUT
+
+          echo "Resolved versions:"
+          echo "  medusa_version: ${MEDUSA_VERSION}"
+          echo "  docker_tag:     ${DOCKER_TAG}"
+          echo "  release_tag:    ${RELEASE_TAG}"
+          echo "  prerelease:     ${PRERELEASE}"
+          echo "  channel:        ${CHANNEL}"
+          echo "  short_sha:      ${SHORT_SHA}"
+
+  # ── Build and push multi-arch Docker image ────────────────────────
   build-and-push:
+    needs: get-versions
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -22,20 +81,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Get release version
-        id: version
-        run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event_name }}" = "push" ]; then
-            echo "version=v0.0.1-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
-          else
-            echo "version=v$(date +%Y%m%d)" >> $GITHUB_OUTPUT
-          fi
-          VERSION="${{ steps.version.outputs.version }}"
-          VERSION_NO_V="${VERSION#v}"
-          echo "version_no_v=${VERSION_NO_V}" >> $GITHUB_OUTPUT
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -50,14 +95,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
+      - name: Extract metadata (Docker tags/labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=${{ steps.version.outputs.version }}
-            type=raw,value=latest
+            # Version-aligned primary tag (e.g. 2.18.0 or 2.18.0-a1b2c3d)
+            type=raw,value=${{ needs.get-versions.outputs.docker_tag }}
+            # Channel aliases: "latest" for stable releases, "edge" for edge builds
+            type=raw,value=latest,enable=${{ needs.get-versions.outputs.channel == 'stable' }}
+            type=raw,value=edge,enable=${{ needs.get-versions.outputs.channel == 'edge' }}
+            # Pure Medusa version tag (overwritten on each build for that Medusa version line)
+            type=raw,value=${{ needs.get-versions.outputs.medusa_version }}
+            # Immutable SHA tag
             type=sha,prefix=sha-
 
       - name: Build and push Docker image
@@ -72,10 +123,11 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            MEDUSA_VERSION=${{ steps.version.outputs.version_no_v }}
+            MEDUSA_VERSION=${{ needs.get-versions.outputs.medusa_version }}
 
+  # ── Smoke test the freshly pushed image ───────────────────────────
   smoke-test:
-    needs: build-and-push
+    needs: [get-versions, build-and-push]
     runs-on: ubuntu-latest
     permissions:
       packages: read
@@ -106,17 +158,6 @@ jobs:
           --health-retries 10
 
     steps:
-      - name: Get release version
-        id: version
-        run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event_name }}" = "push" ]; then
-            echo "version=v0.0.1-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
-          else
-            echo "version=v$(date +%Y%m%d)" >> $GITHUB_OUTPUT
-          fi
-
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -128,7 +169,7 @@ jobs:
         run: |
           REPO_LC="${{ github.repository }}"
           REPO_LC="${REPO_LC,,}"
-          IMAGE="ghcr.io/${REPO_LC}:${{ steps.version.outputs.version }}"
+          IMAGE="ghcr.io/${REPO_LC}:${{ needs.get-versions.outputs.docker_tag }}"
           echo "Pulling and running $IMAGE ..."
           docker run -d --name medusa-test \
             --network host \
@@ -147,7 +188,6 @@ jobs:
               curl -s http://localhost:9000/health
               exit 0
             fi
-            # Check if container is still running
             if ! docker ps | grep -q medusa-test; then
               echo "Container exited early. Logs:"
               docker logs medusa-test
@@ -172,8 +212,9 @@ jobs:
         if: always()
         run: docker rm -f medusa-test || true
 
+  # ── Build 1Panel app package + attach to release ──────────────────
   build-package:
-    needs: [build-and-push, smoke-test]
+    needs: [get-versions, build-and-push, smoke-test]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -182,58 +223,43 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Get release version
-        id: version
-        run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event_name }}" = "push" ]; then
-            echo "version=v0.0.1-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
-          else
-            echo "version=v$(date +%Y%m%d)" >> $GITHUB_OUTPUT
-          fi
-
       - name: Update image reference in docker-compose.yml
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          VERSION_NO_V="${VERSION#v}"
+          MEDUSA_VER="${{ needs.get-versions.outputs.medusa_version }}"
+          DOCKER_TAG="${{ needs.get-versions.outputs.docker_tag }}"
           REPO_LC="${{ github.repository }}"
           REPO_LC="${REPO_LC,,}"
-          IMAGE_REF="ghcr.io/${REPO_LC}:${VERSION}"
+          IMAGE_REF="ghcr.io/${REPO_LC}:${DOCKER_TAG}"
 
           echo "Updating image reference to: ${IMAGE_REF}"
-          sed -i "s|ghcr.io/REPLACE_ME/bun-medusa:2.18.0|${IMAGE_REF}|g" apps/${APP_NAME}/2.18.0/docker-compose.yml
-          cat apps/${APP_NAME}/2.18.0/docker-compose.yml
+          sed -i "s|ghcr.io/REPLACE_ME/bun-medusa:2.18.0|${IMAGE_REF}|g" apps/${APP_NAME}/${MEDUSA_VER}/docker-compose.yml
+          cat apps/${APP_NAME}/${MEDUSA_VER}/docker-compose.yml
 
       - name: Validate app structure
         run: |
+          MEDUSA_VER="${{ needs.get-versions.outputs.medusa_version }}"
           if [ ! -d "apps/${APP_NAME}" ]; then
             echo "::error::App directory apps/${APP_NAME} not found"
             exit 1
           fi
-
           if [ ! -f "apps/${APP_NAME}/data.yml" ]; then
             echo "::error::App metadata data.yml not found"
             exit 1
           fi
-
-          if [ ! -f "apps/${APP_NAME}/2.18.0/data.yml" ]; then
-            echo "::error::Version data.yml not found for 2.18.0"
+          if [ ! -f "apps/${APP_NAME}/${MEDUSA_VER}/data.yml" ]; then
+            echo "::error::Version data.yml not found for ${MEDUSA_VER}"
             exit 1
           fi
-
-          if [ ! -f "apps/${APP_NAME}/2.18.0/docker-compose.yml" ]; then
-            echo "::error::docker-compose.yml not found for 2.18.0"
+          if [ ! -f "apps/${APP_NAME}/${MEDUSA_VER}/docker-compose.yml" ]; then
+            echo "::error::docker-compose.yml not found for ${MEDUSA_VER}"
             exit 1
           fi
-
-          echo "App structure validated successfully for version 2.18.0"
+          echo "App structure validated successfully for version ${MEDUSA_VER}"
 
       - name: Package as tar.gz
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          VERSION_NO_V="${VERSION#v}"
-          PACKAGE_NAME="${APP_NAME}-${VERSION_NO_V}-1panel.tar.gz"
+          DOCKER_TAG="${{ needs.get-versions.outputs.docker_tag }}"
+          PACKAGE_NAME="${APP_NAME}-${DOCKER_TAG}-1panel.tar.gz"
 
           cd apps
           tar czf ../${PACKAGE_NAME} ${APP_NAME}/
@@ -244,9 +270,8 @@ jobs:
 
       - name: Package as zip
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          VERSION_NO_V="${VERSION#v}"
-          PACKAGE_NAME="${APP_NAME}-${VERSION_NO_V}-1panel.zip"
+          DOCKER_TAG="${{ needs.get-versions.outputs.docker_tag }}"
+          PACKAGE_NAME="${APP_NAME}-${DOCKER_TAG}-1panel.zip"
 
           cd apps
           zip -r ../${PACKAGE_NAME} ${APP_NAME}/
@@ -258,16 +283,31 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: 1panel-app-${{ steps.version.outputs.version }}
+          name: 1panel-app-${{ needs.get-versions.outputs.docker_tag }}
           path: |
             *.tar.gz
             *.zip
           retention-days: 30
 
-      - name: Attach to release
-        if: github.event_name == 'release'
+      - name: Create/update GitHub release and attach packages
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.get-versions.outputs.release_tag }}
+          prerelease: ${{ needs.get-versions.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.get-versions.outputs.channel == 'stable' }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             *.tar.gz
             *.zip
+          body: |
+            ## 1Panel 应用包 — Medusa ${{ needs.get-versions.outputs.medusa_version }}
+
+            对应 Docker 镜像：`ghcr.io/${{ github.repository }}:${{ needs.get-versions.outputs.docker_tag }}`
+
+            Commit: `${{ needs.get-versions.outputs.short_sha }}` · 通道: `${{ needs.get-versions.outputs.channel }}`
+
+            ### 安装说明
+            1. 下载 `.tar.gz` 或 `.zip`
+            2. 在 1Panel 应用商店 → 本地安装 → 选择该文件
+            3. 按表单填写 PostgreSQL / Redis / 管理员信息后提交
