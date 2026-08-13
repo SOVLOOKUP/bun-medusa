@@ -1,0 +1,74 @@
+# PROD: Medusa only — pre-built admin, bun run start, no Vite at runtime.
+#
+# Uses `Dockerfile.prod` (the CI "Release" workflow ships its image to ghcr.io).
+# Point it at your existing Postgres + Redis containers on the external
+# Docker network (defaults to `1panel-network` — rename the networks block
+# if yours has a different name).
+#
+# Usage:
+#   cp .env.example .env
+#   # Minimum .env for prod:
+#   #   BASE_URL=https://medusa.example.com:8443   ← 写这一次
+#   #   POSTGRES_HOST / POSTGRES_PASSWORD / POSTGRES_USER / POSTGRES_DB
+#   #   REDIS_HOST / REDIS_PASSWORD
+#   #   (JWT / cookie / MFA 留空 → entrypoint 自动生成 + 持久化)
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#   open https://medusa.example.com:8443/app
+
+services:
+  medusa:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    image: ghcr.io/${REGISTRY_REPO:-sovlookup/bun-medusa}:${TAG:-latest}
+    pull_policy: build
+    container_name: medusa_prod_backend
+    restart: unless-stopped
+    networks:
+      - 1panel-network
+    ports:
+      # Forward only ONE port; reverse-proxy this to the world via HTTPS
+      # (e.g. 1Panel Nginx site). Remember to add Upgrade/Connection/Host/
+      # X-Forwarded-* passthrough headers in the Nginx location.
+      - "9000:9000"
+    environment:
+      NODE_ENV: production
+
+      DATABASE_URL: postgres://${POSTGRES_USER:-medusa}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:5432/${POSTGRES_DB:-medusa}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@${REDIS_HOST:-redis}:6379
+
+      # --- Single public origin — 写这一次（自动推导 CORS + ADMIN_URL）----
+      BASE_URL: ${BASE_URL:-}
+
+      # --- Secrets — 留空自动生成并持久化到容器内 /app/medusa/.env。显式填优先。
+      JWT_SECRET: ${JWT_SECRET:-}
+      COOKIE_SECRET: ${COOKIE_SECRET:-}
+      AUTH_MFA_ENCRYPTION_KEY: ${AUTH_MFA_ENCRYPTION_KEY:-}
+
+      # --- CORS / ADMIN_URL（BASE_URL 自动推导即可，通常不用写）----------
+      ADMIN_URL: ${ADMIN_URL:-}
+      STORE_CORS: ${STORE_CORS:-}
+      ADMIN_CORS: ${ADMIN_CORS:-}
+      AUTH_CORS: ${AUTH_CORS:-}
+
+      MEDUSA_AUTO_MIGRATE: ${MEDUSA_AUTO_MIGRATE:-true}
+      MEDUSA_ADMIN_EMAIL: ${MEDUSA_ADMIN_EMAIL:-admin@medusa.local}
+      MEDUSA_ADMIN_PASSWORD: ${MEDUSA_ADMIN_PASSWORD:-SuperSecret123}
+
+    env_file:
+      - .env
+    volumes:
+      # Keep runtime-created caches + persisted .env across container recreates.
+      - medusa_data:/app/medusa
+
+    command: ["bun", "run", "start"]
+
+networks:
+  # Default network is 1panel-network (external).  Replace with your own
+  # network name if you host Postgres / Redis elsewhere.
+  1panel-network:
+    external: true
+
+volumes:
+  medusa_data:

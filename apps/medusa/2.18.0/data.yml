@@ -118,9 +118,31 @@ additionalProperties:
         ko: Cookie 비밀
         zh-Hant: Cookie金鑰
       random: true
-      required: true
+      required: false
       rule: paramComplexity
       type: password
+      help:
+        zh: 留空则容器启动时自动生成一个强随机密钥。手动填建议用 `openssl rand -hex 32`。
+        en: Leave empty and entrypoint will auto-generate a strong random value.
+    - default: ""
+      edit: true
+      envKey: AUTH_MFA_ENCRYPTION_KEY
+      label:
+        en: MFA Encryption Key
+        zh: MFA 加密密钥
+        ja: MFA暗号化キー
+        ms: Kunci Penyulaman MFA
+        pt-br: Chave de Criptografia MFA
+        ru: Ключ шифрования MFA
+        ko: MFA 암호화 키
+        zh-Hant: MFA加密金鑰
+      random: true
+      required: false
+      rule: paramComplexity
+      type: password
+      help:
+        zh: 留空自动生成，手动填建议使用 `openssl rand -hex 64`。
+        en: Leave empty for auto-generation; use openssl rand -hex 64 if setting manually.
     - default: "9000"
       edit: true
       envKey: PANEL_APP_PORT_HTTP

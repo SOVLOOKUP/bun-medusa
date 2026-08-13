@@ -1,7 +1,38 @@
+# Git metadata / Docker build metadata — never in the image.
 .git
 .github
 .gitignore
 .dockerignore
+
+# Never ship developer/host local env files, but keep the template.
+.env
+.env.local
+.env.*
+!.env.example
+
+# Host-level READMEs can leak internal domains in local edits; also they're
+# not used at runtime.  Excluded to keep build context small — they're still
+# committed to git, just not part of the image build COPY.
 *.md
-node_modules
+
+# Bun / npm / yarn caches.
+node_modules/
+
+# The 1Panel apps/ directory is consumed by the GitHub Actions job only to
+# make release tarballs.  The images themselves don't need it.
 apps/
+
+# Dev-only starter source (big bind-mount).
+medusa-app/node_modules/
+medusa-app/.medusa/
+medusa-app/dist/
+medusa-app/.yarn/
+medusa-app/.yarnrc.yml
+medusa-app/yarn-error.log
+medusa-app/coverage/
+
+# Editor / OS junk.
+.DS_Store
+.vscode/
+.idea/
+*.swp

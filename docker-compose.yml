@@ -1,21 +1,23 @@
-# Development environment — source code mount + hot reload.
+# DEV: self-contained Medusa + postgres + redis, source mount + hot reload.
 #
-# Brings up postgres + redis + a Medusa dev container that runs
-# `medusa develop` with the source code bind-mounted from ./medusa-app.
+# Default docker-compose (no -f required).  Uses `Dockerfile` = dev image,
+# runs `bun run dev` and bind-mounts ./medusa-app so you can edit source
+# on the host and the dev server hot-reloads inside the container.
 #
-# On first boot the entrypoint automatically seeds ./medusa-app with the
-# official starter source, installs dependencies, and creates the admin
-# user.  After that you can edit files in ./medusa-app/src/ and the dev
-# server hot-reloads instantly.
+# For PRODUCTION deployments (prebuilt admin, external postgres/redis, no
+# Vite dev server at runtime) use docker-compose.prod.yml instead.
 #
 # Usage:
-#   1. cp .env.example .env  &&  fill in the secrets
-#   2. docker compose -f docker-compose.dev.yml up -d --build
-#   3. open http://localhost:5173/app  (admin, hot-reload)
-#      open http://localhost:9000/store/products  (store API)
+#   cp .env.example .env
+#   # Secrets are auto-generated on first boot (omit them unless you want
+#   # to pin a specific value).  If you expose the admin behind a reverse
+#   # proxy, also set ADMIN_URL = <your browser-facing URL>.
 #
-# The first build is slow (clones + installs full deps).  Subsequent
-# starts are fast — the source and node_modules are cached in volumes.
+#   docker compose up -d --build
+#   open http://localhost:9000/app
+#
+# Login (defaults, overridable via MEDUSA_ADMIN_EMAIL / MEDUSA_ADMIN_PASSWORD):
+#   admin@medusa.local / SuperSecret123
 
 services:
   postgres:
@@ -50,7 +52,7 @@ services:
   medusa:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile   # default Dockerfile = dev image (matches CI build-and-push-dev)
     container_name: medusa_dev_backend
     restart: unless-stopped
     depends_on:
@@ -59,22 +61,52 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "9000:9000"   # Backend API + Admin dashboard
+      # One single port mapping for EVERYTHING: HTTP, Admin, and Vite HMR WS.
+      # shared-port-proxy.ts inside the container dispatches HTTP → Medusa
+      # (9002) / vite-hmr WS → Vite (9001).
+      - "9000:9000"
     environment:
       NODE_ENV: development
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/medusa-store
       REDIS_URL: redis://redis:6379
-      JWT_SECRET: ${JWT_SECRET:-change_me_jwt}
-      COOKIE_SECRET: ${COOKIE_SECRET:-change_me_cookie}
-      STORE_CORS: ${STORE_CORS:-http://localhost:8000}
-      ADMIN_CORS: ${ADMIN_CORS:-http://localhost:5173,http://localhost:9000}
-      AUTH_CORS: ${AUTH_CORS:-http://localhost:5173,http://localhost:8000,http://localhost:9000}
+
+      # --- Single public origin — 写这一次（自动推导 CORS + HMR + ADMIN_URL）
+      # 浏览器实际访问的地址，包含协议/主机/端口。例如：
+      #   本机开发：              http://localhost:9000
+      #   HTTPS 反向代理 1Panel： https://medusa.example.com:8443
+      # 留空则 ADMIN_URL / CORS / HMR 一律退回到 localhost 默认值。
+      BASE_URL: ${BASE_URL:-}
+
+      # --- Secrets — 留空 → entrypoint 自动生成 + 持久化到 medusa-app/.env
+      # 填显式值会覆盖自动生成。
+      JWT_SECRET: ${JWT_SECRET:-}
+      COOKIE_SECRET: ${COOKIE_SECRET:-}
+      AUTH_MFA_ENCRYPTION_KEY: ${AUTH_MFA_ENCRYPTION_KEY:-}
+
+      # --- CORS / ADMIN_URL（BASE_URL 自动推导就够了，通常不用改）----------
+      # ADMIN_URL is what the browser uses to reach the admin.  entrypoint
+      # prefers BASE_URL but falls back to ADMIN_URL if only ADMIN_URL set.
+      ADMIN_URL: ${ADMIN_URL:-}
+      STORE_CORS: ${STORE_CORS:-}
+      ADMIN_CORS: ${ADMIN_CORS:-}
+      AUTH_CORS: ${AUTH_CORS:-}
+
+      # --- HMR 细粒度覆盖（BASE_URL 自动推导不够细才填）-------------------
+      HMR_HOSTNAME: ${HMR_HOSTNAME:-}
+      HMR_PROTOCOL: ${HMR_PROTOCOL:-}
+      HMR_CLIENT_PORT: ${HMR_CLIENT_PORT:-}
+
+      MEDUSA_AUTO_MIGRATE: ${MEDUSA_AUTO_MIGRATE:-true}
       MEDUSA_ADMIN_EMAIL: ${MEDUSA_ADMIN_EMAIL:-admin@medusa.local}
       MEDUSA_ADMIN_PASSWORD: ${MEDUSA_ADMIN_PASSWORD:-SuperSecret123}
+
+    env_file:
+      - .env
     volumes:
-      # Source code mount — edit ./medusa-app/src/ on the host, hot-reload in container.
+      # Edit ./medusa-app/src/ on the host → dev server inside container
+      # picks changes up via Vite watcher + hot reload.
       - ./medusa-app:/app/medusa
-      # Keep the container's installed node_modules (don't let the bind-mount wipe it).
+      # Container-installed node_modules survive the bind-mount above.
       - medusa_node_modules:/app/medusa/node_modules
     command: ["bun", "run", "dev"]
 

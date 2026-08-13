@@ -1,3 +1,10 @@
+# 1Panel 应用商店内的发布模板 — 在 CI `release.yml` build-package job 里，
+# `image:` 的占位 tag 会被替换成真实的 `ghcr.io/<repo>:<docker_tag>`。
+#
+# 1Panel 的表单字段叫 PUBLIC_URL（通常是 `${PANEL_APP_PORT_HTTP}` 对应的公网 origin），
+# 这里把它映射到 BASE_URL；entrypoint 会自动从 BASE_URL 推导所有 CORS 和 ADMIN_URL，
+# 用户不再需要分别填 STORE_CORS / ADMIN_CORS / AUTH_CORS。
+
 services:
   medusa:
     image: ghcr.io/REPLACE_ME/bun-medusa:2.18.0
@@ -11,15 +18,27 @@ services:
       NODE_ENV: production
       DATABASE_URL: postgres://${PANEL_DB_USER}:${PANEL_DB_USER_PASSWORD}@${PANEL_DB_HOST}:5432/${PANEL_DB_NAME}?sslmode=disable
       REDIS_URL: redis://:${REDIS_PASSWORD}@${REDIS_HOST}:6379
+
+      # ⭐ 写一次公网 origin 就行，entrypoint 自动展开 CORS / ADMIN_URL
+      BASE_URL: ${PUBLIC_URL}
+      ADMIN_URL: ${PUBLIC_URL}/app
+
+      # 密钥：1Panel 表单里用 32/64 hex 强值填；留空 entrypoint 也能自动生成，但
+      # 建议 1Panel 表单强制生成并保存，避免容器重建后轮换（密钥轮换 → 现有 JWT 失效）。
       JWT_SECRET: ${JWT_SECRET}
       COOKIE_SECRET: ${COOKIE_SECRET}
-      STORE_CORS: ${PUBLIC_URL}
+      AUTH_MFA_ENCRYPTION_KEY: ${AUTH_MFA_ENCRYPTION_KEY}
+
+      # 显式兜底 CORS（通常不用，BASE_URL 推导后仍为空时用）
+      STORE_CORS: ${PUBLIC_URL},http://localhost:8000
       ADMIN_CORS: ${PUBLIC_URL},http://localhost:9000
-      AUTH_CORS: ${PUBLIC_URL},http://localhost:9000
+      AUTH_CORS: ${PUBLIC_URL},http://localhost:8000,http://localhost:9000
+
+      MEDUSA_AUTO_MIGRATE: "true"
       MEDUSA_ADMIN_EMAIL: ${MEDUSA_ADMIN_EMAIL}
       MEDUSA_ADMIN_PASSWORD: ${MEDUSA_ADMIN_PASSWORD}
     volumes:
-      - ./data:/app/medusa/.medusa
+      - ./data:/app/medusa
     labels:
       createdBy: "Apps"
 
