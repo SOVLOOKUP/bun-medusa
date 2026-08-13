@@ -398,6 +398,52 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Ensure versioned 1Panel app directory exists
+        run: |
+          set -euo pipefail
+          MEDUSA_VER="${{ needs.get-versions.outputs.medusa_version }}"
+          APP_DIR="apps/${APP_NAME}"
+          TARGET_DIR="${APP_DIR}/${MEDUSA_VER}"
+
+          if [ -d "${TARGET_DIR}" ] && [ -f "${TARGET_DIR}/data.yml" ] && [ -f "${TARGET_DIR}/docker-compose.yml" ]; then
+            echo "Using existing versioned app directory: ${TARGET_DIR}"
+            exit 0
+          fi
+
+          if [ ! -d "${APP_DIR}" ]; then
+            echo "::error::App directory ${APP_DIR} not found"
+            exit 1
+          fi
+
+          # ── Pick the most recent existing version directory as template ──
+          # shellcheck disable=SC2012
+          TEMPLATE_DIR=$(
+            ls -1 "${APP_DIR}" \
+              | awk '/^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$/' \
+              | sort -V \
+              | tail -n1
+          ) || true
+
+          if [ -z "${TEMPLATE_DIR}" ] || [ ! -d "${APP_DIR}/${TEMPLATE_DIR}/data.yml" ] || [ ! -d "${APP_DIR}/${TEMPLATE_DIR}/docker-compose.yml" ]; then
+            echo "::error::No existing versioned template directory under ${APP_DIR} to seed ${TARGET_DIR}"
+            exit 1
+          fi
+
+          echo "Seeding ${TARGET_DIR} from template ${APP_DIR}/${TEMPLATE_DIR} (Medusa release bump)"
+          cp -a "${APP_DIR}/${TEMPLATE_DIR}" "${TARGET_DIR}"
+
+          # The template docker-compose.yml uses the pattern `ghcr.io/REPLACE_ME/bun-medusa:<OLD_VER>`
+          # as a placeholder that build-package then rewrites to the real image ref.  Rewrite the
+          # old version token so the placeholder stays aligned with the new MEDUSA_VER (it's still
+          # a placeholder — this is purely cosmetic for anyone inspecting the repo tree).
+          if grep -qE 'ghcr\.io/REPLACE_ME/bun-medusa:[0-9]+\.[0-9]+\.[0-9]+' "${TARGET_DIR}/docker-compose.yml"; then
+            sed -i -E "s|ghcr\.io/REPLACE_ME/bun-medusa:[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?|ghcr.io/REPLACE_ME/bun-medusa:${MEDUSA_VER}|g" \
+              "${TARGET_DIR}/docker-compose.yml"
+          fi
+
+          echo "Seeded template directory contents preview:"
+          ls -la "${TARGET_DIR}"
+
       - name: Update image reference in docker-compose.yml
         run: |
           MEDUSA_VER="${{ needs.get-versions.outputs.medusa_version }}"
@@ -407,8 +453,10 @@ jobs:
           IMAGE_REF="ghcr.io/${REPO_LC}:${DOCKER_TAG}"
 
           echo "Updating image reference to: ${IMAGE_REF}"
-          sed -i "s|ghcr.io/REPLACE_ME/bun-medusa:2.18.0|${IMAGE_REF}|g" apps/${APP_NAME}/${MEDUSA_VER}/docker-compose.yml
-          cat apps/${APP_NAME}/${MEDUSA_VER}/docker-compose.yml
+          # Match any version placeholder currently sitting in the template; not just 2.18.0.
+          sed -i -E "s|ghcr\.io/REPLACE_ME/bun-medusa:[^\"'[:space:]]+|${IMAGE_REF}|g" \
+            "apps/${APP_NAME}/${MEDUSA_VER}/docker-compose.yml"
+          cat "apps/${APP_NAME}/${MEDUSA_VER}/docker-compose.yml"
 
       - name: Validate app structure
         run: |

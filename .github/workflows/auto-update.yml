@@ -1,0 +1,275 @@
+name: Auto-update Medusa version
+
+on:
+  # Poll the upstream registries (npm @medusajs/medusa + GitHub releases)
+  # every 6 hours.  Cron is UTC.
+  schedule:
+    - cron: "17 */6 * * *"
+  # Also allow manual dispatch so you don't have to wait for the clock
+  # after upstream cuts a release.  Override `version` to force a target.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Override: a specific Medusa semver to bump to (e.g. 2.19.1).  Leave empty = use npm @medusajs/medusa `latest`."
+        required: false
+        type: string
+      force:
+        description: "Force: re-commit / re-open the bump even if this version already matches main."
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: "auto-update-medusa"
+  cancel-in-progress: true
+
+env:
+  APP_NAME: medusa
+  NPM_PACKAGE: "@medusajs/medusa"
+  UPSTREAM_REPO: "medusajs/medusa"
+  BASE_BRANCH: main
+
+jobs:
+  check-and-bump:
+    name: Check upstream, apply bump to main if newer
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # push commit to main → triggers Release workflow
+      pull-requests: write   # fall back to PR if direct push is blocked
+      actions: read          # inspect existing workflow runs if needed
+
+    steps:
+      - name: Resolve upstream & current versions
+        id: versions
+        run: |
+          set -euo pipefail
+
+          # ── 1) Target version ─────────────────────────────────────────
+          if [ -n "${{ inputs.version }}" ]; then
+            WANTED="${{ inputs.version }}"
+            echo "Using workflow_dispatch override version: ${WANTED}"
+          else
+            echo "Querying npm registry for ${NPM_PACKAGE}@latest (retries to avoid 429s)"
+            WANTED=""
+            for i in 1 2 3 4 5; do
+              WANTED=$(curl --retry 2 --max-time 20 -fsSL \
+                -H "Accept: application/vnd.npm.install-v1+json" \
+                "https://registry.npmjs.org/${NPM_PACKAGE}" \
+                | python3 -c 'import sys, json; d=json.load(sys.stdin); print(d.get("dist-tags",{}).get("latest",""))' \
+                2>/dev/null || true)
+              if [ -n "${WANTED}" ]; then break; fi
+              sleep $((i * 10))
+            done
+            if [ -z "${WANTED}" ]; then
+              echo "::error::Failed to resolve ${NPM_PACKAGE}@latest from npm"
+              exit 1
+            fi
+            echo "npm ${NPM_PACKAGE}@latest = ${WANTED}"
+          fi
+
+          # Sanitize: strip leading v, disallow empty / non-semver-ish
+          WANTED="${WANTED#v}"
+          if ! printf '%s' "${WANTED}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$'; then
+            echo "::error::Target version '${WANTED}' doesn't look like a semver release"
+            exit 1
+          fi
+
+          echo "wanted=${WANTED}" >> "$GITHUB_OUTPUT"
+
+          # Also resolve GitHub release body for a more useful commit msg.
+          UPSTREAM_RELEASE_URL="https://github.com/${UPSTREAM_REPO}/releases/tag/v${WANTED}"
+          echo "upstream_release_url=${UPSTREAM_RELEASE_URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASE_BRANCH }}
+          fetch-depth: 1
+
+      - name: Detect current in-repo MEDUSA_VERSION
+        id: current
+        run: |
+          set -euo pipefail
+          CURR=""
+          for f in Dockerfile.prod Dockerfile; do
+            if [ -f "$f" ]; then
+              v=$(grep -m1 '^ARG MEDUSA_VERSION=' "$f" | cut -d= -f2 | tr -d '[:space:]' | tr -d '"')
+              if [ -z "${CURR}" ]; then CURR="$v"; fi
+              if [ "$v" != "${CURR}" ]; then
+                echo "::warning::${f} MEDUSA_VERSION=${v} differs from Dockerfile.prod=${CURR}; bump will harmonize them."
+              fi
+            fi
+          done
+          if [ -z "${CURR}" ]; then
+            echo "::error::Could not read ARG MEDUSA_VERSION= from Dockerfile.prod or Dockerfile"
+            exit 1
+          fi
+          echo "current=${CURR}" >> "$GITHUB_OUTPUT"
+          echo "repo MEDUSA_VERSION=${CURR}"
+
+      - name: "Decide — skip vs. apply bump"
+        id: decision
+        env:
+          FORCE_INPUT: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          WANTED="${{ steps.versions.outputs.wanted }}"
+          CURR="${{ steps.current.outputs.current }}"
+          case "${FORCE_INPUT,,}" in
+            1|true|yes|on) FORCE=true ;;
+            *)             FORCE= ;;
+          esac
+
+          if [ "${WANTED}" = "${CURR}" ] && [ -z "${FORCE}" ]; then
+            echo "Upstream @ ${WANTED} == repo @ ${CURR}.  Nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "reason=already on latest" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "reason=${CURR} -> ${WANTED} (force=${FORCE:-false})" >> "$GITHUB_OUTPUT"
+
+      - name: Apply Medusa version bump across repo
+        if: steps.decision.outputs.skip == 'false'
+        env:
+          WANTED: ${{ steps.versions.outputs.wanted }}
+          CURR:   ${{ steps.current.outputs.current }}
+        run: |
+          set -euo pipefail
+          echo "Applying bump: ${CURR} -> ${WANTED}"
+
+          # ── 1) Update the two MEDUSA_VERSION build args (single source of truth) ─
+          for f in Dockerfile.prod Dockerfile; do
+            if [ -f "$f" ]; then
+              sed -i -E "s|^ARG MEDUSA_VERSION=[^[:space:]]+|ARG MEDUSA_VERSION=${WANTED}|" "$f"
+              echo "  patched $f"
+            fi
+          done
+
+          # ── 2) Seed 1Panel versioned app directory from latest existing template ─
+          APP_DIR="apps/${APP_NAME}"
+          TARGET_DIR="${APP_DIR}/${WANTED}"
+          if [ ! -d "${TARGET_DIR}" ] && [ -d "${APP_DIR}" ]; then
+            TEMPLATE_DIR=$(
+              ls -1 "${APP_DIR}" \
+                | awk '/^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$/' \
+                | sort -V \
+                | tail -n1
+            ) || true
+            if [ -n "${TEMPLATE_DIR}" ] && [ -f "${APP_DIR}/${TEMPLATE_DIR}/data.yml" ] && [ -f "${APP_DIR}/${TEMPLATE_DIR}/docker-compose.yml" ]; then
+              echo "  Seeding 1Panel ${TARGET_DIR} from ${APP_DIR}/${TEMPLATE_DIR}"
+              cp -a "${APP_DIR}/${TEMPLATE_DIR}" "${TARGET_DIR}"
+              # Align the placeholder image tag so the repo tree is legible.
+              sed -i -E "s|ghcr\.io/REPLACE_ME/bun-medusa:[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?|ghcr.io/REPLACE_ME/bun-medusa:${WANTED}|g" \
+                "${TARGET_DIR}/docker-compose.yml"
+            fi
+          fi
+
+          # ── 3) Keep the repo example/docs in lockstep (soft: only the stable
+          # MEDUSA_VERSION tokens, never touch user-specific URLs). ──────────
+          if [ -f .env.example ]; then
+            # Match only a pure "version placeholder" pattern so we don't
+            # accidentally rewrite a MEDUSA_VER-shaped comment that isn't a
+            # placeholder.  Current file has "2.18.0" next to ARG mentions.
+            sed -i -E "s|MEDUSA_VERSION=${CURR}|MEDUSA_VERSION=${WANTED}|g" .env.example || true
+          fi
+
+          # Show the diff summary in logs for traceability.
+          echo "--- diffstat ---"
+          git diff --stat || true
+
+      - name: Configure bot git identity
+        if: steps.decision.outputs.skip == 'false'
+        run: |
+          git config user.name  "medusa-updater[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit bump directly to ${{ env.BASE_BRANCH }}
+        id: commit
+        if: steps.decision.outputs.skip == 'false'
+        env:
+          WANTED: ${{ steps.versions.outputs.wanted }}
+          CURR:   ${{ steps.current.outputs.current }}
+          URL:    ${{ steps.versions.outputs.upstream_release_url }}
+        run: |
+          set -euo pipefail
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No staged changes; aborting empty commit."
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Use a deterministic trailer to detect duplicate pushes.
+          TRAILER="Medusa-Version-Bump: ${CURR}->${WANTED}"
+          git commit -m "chore(medusa): bump ${CURR} -> ${WANTED}
+
+          Auto-updated by .github/workflows/auto-update.yml from npm ${NPM_PACKAGE}@latest.
+          Upstream: ${URL}
+
+          Changes:
+            - Dockerfile.prod / Dockerfile : ARG MEDUSA_VERSION=${WANTED}
+            - apps/${APP_NAME}/${WANTED}/  : 1Panel 版本目录 (基于最近版本模板自动复制)
+            - .env.example 等示例里的 MEDUSA_VERSION 占位同步
+
+          ${TRAILER}"
+
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git log --oneline -1
+
+      # ── Push strategy ──────────────────────────────────────────────────
+      # Prefer direct push (a push to main immediately triggers Release
+      # workflow, which runs full smoke-test and attaches the 1Panel package
+      # to the edge release).  Fall back to opening a PR so nothing is lost
+      # if the default token can't push directly (e.g. branch protection).
+      - name: Push direct to ${{ env.BASE_BRANCH }}
+        id: push
+        if: steps.commit.outputs.committed == 'true'
+        continue-on-error: true
+        run: |
+          git push origin HEAD:${BASE_BRANCH}
+      - name: Open PR as fallback
+        if: steps.commit.outputs.committed == 'true' && steps.push.outcome != 'success'
+        env:
+          WANTED: ${{ steps.versions.outputs.wanted }}
+          CURR:   ${{ steps.current.outputs.current }}
+          URL:    ${{ steps.versions.outputs.upstream_release_url }}
+        run: |
+          set -euo pipefail
+          BR="auto-bump-medusa-${WANTED}"
+          git checkout -b "${BR}"
+          git push --force origin "HEAD:refs/heads/${BR}"
+          gh pr create \
+            --base "${BASE_BRANCH}" \
+            --head "${BR}" \
+            --title "chore(medusa): bump ${CURR} -> ${WANTED}" \
+            --body "Automated Medusa upstream bump (npm ${NPM_PACKAGE}@latest).
+
+          - Target: \`${CURR}\` → \`${WANTED}\`
+          - Upstream release notes: ${URL}
+          - After merge, the Release workflow will rebuild images + smoke test + 1Panel package.
+
+          *Generated by .github/workflows/auto-update.yml*" \
+            --label "dependencies,automated-pr" || true
+
+      - name: Summary
+        run: |
+          if [ "${{ steps.decision.outputs.skip }}" = "true" ]; then
+            echo "✓ Skipped: ${{ steps.decision.outputs.reason }}"
+          else
+            echo "✓ Applied bump ${{ steps.current.outputs.current }} -> ${{ steps.versions.outputs.wanted }}"
+            if [ "${{ steps.commit.outputs.committed }}" = "true" ]; then
+              echo "  commit: ${{ steps.commit.outputs.commit_sha }}"
+              if [ "${{ steps.push.outcome }}" = "success" ]; then
+                echo "  pushed directly to ${BASE_BRANCH} → Release workflow will start next."
+              else
+                echo "  opened a fallback PR (see above)."
+              fi
+            else
+              echo "  no actual change committed (empty stage?)."
+            fi
+          fi
