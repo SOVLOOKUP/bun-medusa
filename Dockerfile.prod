@@ -14,7 +14,7 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Clone the official Medusa v2 starter (default branch)
-ARG MEDUSA_VERSION=2.18.0
+ARG MEDUSA_VERSION=2.19.0
 ARG STARTER_REPO=https://github.com/medusajs/medusa-starter-default.git
 RUN git clone --depth 1 "$STARTER_REPO" /app/medusa && \
     rm -rf /app/medusa/.git

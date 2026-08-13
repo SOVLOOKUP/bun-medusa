@@ -1,0 +1,5 @@
+# Data Directory
+
+This directory is used to persist Medusa application data. It is mounted at `/app/medusa/.medusa` inside the container.
+
+Do not delete this directory unless you want to reset all data.
